@@ -1,0 +1,59 @@
+{
+    "device": "cuda",
+
+    "model": {
+        "spatial_encoder": {
+            "image_encoder": {
+                "input_shape": [600, 600],
+                "num_chunks": [3, 3],
+                "output_size": 512
+            },
+            "spatial_transformer": {
+                "input_size": 512,
+                "output_size": 40,
+                "transformer_latent_size": 512,
+                "transformer_nheads": 1,
+                "transformer_depth": 2
+            }
+        },
+        "temporal_encoder": {
+            "max_temporal_sequence_length": 128,
+            "rnn_energy_net": {
+                "input_size": 512,
+                "latent_size": 512,
+                "output_size": 512,
+                "z_size": 32,
+                "optimal_variance": 1
+            },
+            "temporal_transformer": {
+                "input_size": 513,
+                "output_size": 12,
+                "transformer_latent_size": 512,
+                "transformer_nheads": 1,
+                "transformer_depth": 2
+            },
+            "spatio_temporal_discriminator": {
+                "state_size": 4,
+                "state_channels": 3,
+                "transformer_latent_size": 512,
+                "transformer_depth": 2
+            }
+        }
+    },
+    
+    "training": {
+        
+        "epochs": 30,
+        "batch_size": 32,
+        "train_split": 0.9,
+
+        "loss_scales": {
+            "rnn_energy_net_prediction": 1,
+            "rnn_energy_net_covariance": 0.33,
+            "rnn_energy_net_variance": 0.33,
+            "rnn_energy_net_z_loss": 0.33,
+            "keypoint_prediction": 1,
+            "crop_prediction": 1
+        }
+    }
+}
