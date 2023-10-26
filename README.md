@@ -32,7 +32,7 @@
   - [ ] Train and confirm, different sizes and maybe adjust the model structure
 ### 0.2
 - [ ] Face Keypoint Data
-  - [ ] Prepare dataloader for WFLW
+  - [x] Prepare dataloader for WFLW
   - [ ] Prepare dataloader for COFW
   - [ ] Prepare dataloader for FDDB
   - [ ] Annotate self recorded videos with help of the teacher networks
