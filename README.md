@@ -61,3 +61,4 @@
 ## Acknowledgement
 - A bunch of research projects all directely referenced by name with papers and links provided
 - few code snippets used from [ultralytics/YOLOv8](https://github.com/ultralytics/ultralytics)
+- ICP from [procrustes/ICP.py](https://github.com/bmershon/procrustes/blob/master/ICP.py)

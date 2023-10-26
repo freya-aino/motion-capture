@@ -1,3 +1,4 @@
+import math
 import re
 import os
 import csv
@@ -12,10 +13,37 @@ from torchvision.transforms.functional import resize, crop
 from torchvision.io import read_image
 
 
+# ------------------------------------------------------------------------
+
+def scale_bbox(bbox: list, current_image_shape: list, new_image_shape: list) -> list:
+    '''
+        current_image_shape and new_image_shape in format [W, H]
+    '''
+    
+    x1, y1, w, h = bbox
+
+    x1 = x1 / current_image_shape[0] * new_image_shape[0]
+    w = w / current_image_shape[0] * new_image_shape[0]
+    y1 = y1 / current_image_shape[1] * new_image_shape[1]
+    h = h / current_image_shape[1] * new_image_shape[1]
+    
+    return [x1, y1, w, h]
+
+def dynamic_bbox_padding(bbox: list, image: T.Tensor, padding_factor: float):
+    relative_fcp_w = int(padding_factor * 10 * (bbox[3] / image.shape[2]))
+    relative_fcp_h = int(padding_factor * 10 * (bbox[2] / image.shape[1]))
+    bbox[0] -= relative_fcp_w
+    bbox[1] -= relative_fcp_h
+    bbox[2] += relative_fcp_w * 2
+    bbox[3] += relative_fcp_h * 2
+    return bbox
+
+# ------------------------------------------------------------------------
+
 class WIDERFaceDataset(data.Dataset):
     
     def __init__(self,
-                 image_shape: tuple,
+                 output_image_shape: tuple,
                  max_number_of_faces: int,
                  center_bbox: bool = True,
                  train_path: str = "\\\\NAS\\Data\\datasets\\WIDER-Face\\train", 
@@ -44,7 +72,7 @@ class WIDERFaceDataset(data.Dataset):
                 }
         '''
 
-        self.image_shape = (image_shape[1], image_shape[0]) #  H, W
+        self.output_image_shape = (output_image_shape[1], output_image_shape[0]) # H, W
         self.max_number_of_faces = max_number_of_faces
         self.center_bbox = center_bbox
 
@@ -66,7 +94,7 @@ class WIDERFaceDataset(data.Dataset):
         padding = [T.zeros(4, dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
         bboxes = T.cat([*bboxes, *padding])
 
-        image = resize(image, self.image_shape, antialias=True)
+        image = resize(image, self.output_image_shape, antialias=True)
 
         datapoint = {
             "image": image,
@@ -76,15 +104,7 @@ class WIDERFaceDataset(data.Dataset):
         return datapoint
 
     def format_bbox(self, bbox: tuple, current_image_shape: tuple):
-        
-        x1, y1, w, h = bbox
-
-        x1 = x1 / current_image_shape[1] * self.image_shape[1]
-        w = w / current_image_shape[1] * self.image_shape[1]
-        y1 = y1 / current_image_shape[0] * self.image_shape[0]
-        h = h / current_image_shape[0] * self.image_shape[0]
-        
-        return T.tensor([x1, y1, w, h], dtype=T.float32)
+        return T.tensor(scale_bbox(bbox, current_image_shape[::-1], self.output_image_shape[::-1]), dtype=T.float32)
 
 
     def extract_formated_annotations(self, path: str, annotation_file_name: str):
@@ -133,36 +153,100 @@ class WIDERFaceDataset(data.Dataset):
                 })
         return formated_datapoints
 
-
-
 class WFLWDataset(data.Dataset):
 
-    def __init__(self):
+    def __init__(self,
+                 output_image_shape: tuple,
+                 face_crop_padding_factor: int,
+                 image_path: str = "\\\\NAS\\Data\\datasets\\WFLW\\images",
+                 annotation_path: str = "\\\\NAS\\Data\\datasets\\WFLW\\annotations"):
         super(type(self), self).__init__()
-        
+        '''
+        file structure from the README:
+
+            coordinates of 98 landmarks (196) + 
+            coordinates of upper left corner and lower right corner of detection rectangle (4) + 
+            attributes annotations (6) + 
+            image name (1)
+            
+            namely
+            
+            x0 y0 ... x97 y97 
+            x_min_rect y_min_rect x_max_rect y_max_rect 
+            pose:
+                normal pose->0
+                large pose->1
+            expression:
+                normal expression->0
+                exaggerate expression->1
+            illumination:
+                normal illumination->0
+                extreme illumination->1
+            make-up:
+                no make-up->0
+                make-up->1
+            occlusion:
+                no occlusion->0
+                occlusion->1
+            blur:
+                clear->0
+                blur->1
+            image_name
+        '''
+
+        self.output_image_shape = (output_image_shape[1], output_image_shape[0])
+        self.image_folder_path = image_path
+        self.face_crop_padding_factor = face_crop_padding_factor
+
+        train_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "train.txt"))
+        validation_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "validation.txt"))
+
+        self.all_datapoints = [*train_datapoints, *validation_datapoints]
+
     def __len__(self):
-        pass
+        return (len(self.all_datapoints))
 
-    def __iter__(self, idx):
-        pass
+    def __getitem__(self, idx):
+
+        datapoint = self.all_datapoints[idx]
+
+        image = read_image(datapoint["image_path"]).to(T.float32)
+        keypoints = T.tensor(datapoint["kpts"], dtype=T.float32)
+        indicators = T.tensor(datapoint["indicators"], dtype=T.float32)
+
+        bbox = datapoint["bbox"]
+        bbox = [bbox[0], bbox[1], (bbox[2] - bbox[0]), (bbox[3] - bbox[1])]
+        bbox = dynamic_bbox_padding(bbox, image, self.face_crop_padding_factor)
+        
+        face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
+
+        kp_scale_factor = T.tensor([face_image.shape[2], face_image.shape[1]])
+        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / kp_scale_factor * T.tensor(self.output_image_shape[::-1])
 
 
-    def process_WFLW_annotation(self, line, image_folder_path: str):
+        face_image = resize(face_image, self.output_image_shape, antialias=True)
+
         return {
-            "image_path": os.path.join(image_folder_path, line[-1]),
-            "kpts": np.array([float(a) for a in line[:196]]).reshape((98, 2)), # TODO: seperate keypoints
-            "bbox": {
-                "x_min": line[196],
-                "y_min": line[197],
-                "x_max": line[198],
-                "y_max": line[199],
-            },
-            "large_pose": line[200],
-            "exaggerated_expression": line[201],
-            "extreme_illumination": line[202],
-            "make_up": line[203],
-            "occlusion": line[204],
-            "blured": line[205],
+            "image": face_image, # in format [Channels, Height, Width]
+            "keypoints": scaled_keypoints, # in format [Width, Height]
+            "indicators": indicators
+        }
+
+    def extract_formatted_datapoints(self, path):
+        individual_datapoints = []
+        with open(path) as f:
+            for l in f.readlines():
+                individual_datapoints.append(self.process_annotation(l))
+        
+        return individual_datapoints
+
+    def process_annotation(self, line):
+        line = line.split(" ")
+        return {
+            "image_path": os.path.join(self.image_folder_path, line[-1])[:-1],
+            "kpts": np.array([float(a) for a in line[:196]]).reshape((98, 2)),
+            "bbox": np.array([int(ell) for ell in line[196:200]]),
+            "indicators": np.array([int(ell) for ell in line[200:206]])
         }
 
 
