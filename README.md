@@ -16,12 +16,13 @@
   - [ ] Prepare dataloader for {todo: one image understanding dataset}
 - [ ] Camera Calibration (only intrinsic calibration required)
 - [ ] Reading
-  - [ ] Read [Baidu's RT-DETR: A Vision Transformer-Based Real-Time Object Detector](https://docs.ultralytics.com/models/rtdetr/)
-  - [ ] Read [Towards Accurate Faial Landmark Detection via Cascaded Transformer](https://openaccess.thecvf.com/content/CVPR2022/papers/Li_Towards_Accurate_Facial_Landmark_Detection_via_Cascaded_Transformers_CVPR_2022_paper.pdf)
-  - [ ] Read [Sparse Local Patch Transformer for Robust Face Alignment and Landmarks Inherent Relation Learning](https://openaccess.thecvf.com/content/CVPR2022/papers/Xia_Sparse_Local_Patch_Transformer_for_Robust_Face_Alignment_and_Landmarks_CVPR_2022_paper.pdf)
+  - [x] Read [Baidu's RT-DETR: A Vision Transformer-Based Real-Time Object Detector](https://docs.ultralytics.com/models/rtdetr/)
+  - [x] Read [Towards Accurate Faial Landmark Detection via Cascaded Transformer](https://openaccess.thecvf.com/content/CVPR2022/papers/Li_Towards_Accurate_Facial_Landmark_Detection_via_Cascaded_Transformers_CVPR_2022_paper.pdf)
+  - [x] Read [Sparse Local Patch Transformer for Robust Face Alignment and Landmarks Inherent Relation Learning](https://openaccess.thecvf.com/content/CVPR2022/papers/Xia_Sparse_Local_Patch_Transformer_for_Robust_Face_Alignment_and_Landmarks_CVPR_2022_paper.pdf)
   - [ ] Read [RePFormer: Refinement Pyramid Transformer for Robust Facial Landmark Detection](https://arxiv.org/pdf/2207.03917.pdf)
   - [ ] Read [Revisiting Quantization Error in Face Alignment](https://openaccess.thecvf.com/content/ICCV2021W/MFR/papers/Lan_Revisting_Quantization_Error_in_Face_Alignment_ICCVW_2021_paper.pdf)
   - [ ] Read [Shape Preserving Facial Landmarks with Graph Attention Networks](https://arxiv.org/pdf/2210.07233.pdf)
+  - [ ] Read [Vision Transformer with Deformable Attention](https://github.com/LeapLabTHU/DAT/tree/main)
 - [ ] Detached Inference from 3. party (deployment)
   - [ ] Implement detached inference with [FACER toolkit (FaRL models)](https://github.com/FacePerceiver/facer)
   - [ ] Implement detached inference with [SPIGA](https://github.com/andresprados/spiga) (Shape Preserving Facial Landmarks with Graph Attention Networks)
