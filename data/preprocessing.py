@@ -16,6 +16,9 @@ import torchvision.transforms as image_transforms
 # collect RL backgrounds to insert into test images (my room)
 
 
+# also look at albumenations https://github.com/albumentations-team/albumentations
+
+
 MainRandomImageTransmuter = image_transforms.RandomChoice([
     # image_transforms.AutoAugment(),
 

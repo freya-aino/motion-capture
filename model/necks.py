@@ -9,7 +9,9 @@ from core.torchhelpers import positional_embedding
 class PyramidTransformerNeck(nn.Module):
     '''
         based on this https://arxiv.org/pdf/2207.03917.pdf
-
+        
+        TODO: not finished yet, but it has no priority rn (28.10.2023)
+        
     '''
     def __init__(self, 
                  output_size,
