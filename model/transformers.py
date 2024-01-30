@@ -27,18 +27,13 @@ class TransformerEncoderBlock(nn.Module):
             nn.Linear(in_features=(input_dim + output_dim) // 2, out_features=output_dim, bias=True),
             nn.ELU(),
         )
-
+        
         self.residual_connection = nn.Sequential(nn.Linear(input_dim, output_dim), nn.ELU())
-
+        
     def forward(self, x: T.Tensor):
-
         residual = self.residual_connection(x)
-
         x = self.LN1(x)
         x, attention_matrix = self.MSA(x, x, x)
-        
         x = self.MLP(self.LN2(x))
-
         x = T.add(residual, x)
-
         return x

@@ -2,36 +2,42 @@ import time
 import torch as T
 import torch.nn as nn
 
-from convolutionals import Backbone
-from necks import UpsampleTransformerNeck
-from heads import SimpleTransformerHead
+from model.conv import Backbone
+from model.conv_necks import UpsampleTransformerNeck
+from model.conv_heads import SimpleTransformerHead
 
 
 
-class FullModelV0(nn.Module):
-    def __init__(self, 
-                 neck_output_size,
-                 head_output_size,
-                 head_output_length,
-                 depth_multiple = 0.33,
-                 width_multiple = 0.25
-                ):
+class FullConvModel(nn.Module):
+    """
+        Full model with convolutional backbone, neck and head.
+        
+        the backbone is expected to output a list of tensors, from different depths of the network.
+    """
+    
+    def __init__(
+        self, 
+        neck_output_size,
+        head_output_size,
+        head_output_length,
+        depth_multiple = 0.33,
+        width_multiple = 0.25):
+        
         super(type(self), self).__init__()
-
+        
         self.backbone = Backbone(depth_multiple, width_multiple)
         self.neck = UpsampleTransformerNeck(neck_output_size, depth_multiple, width_multiple)
         
         self.head = SimpleTransformerHead(neck_output_size, head_output_size, head_output_length, depth_multiple)
         
         print(f"running with neck: {self.neck.__class__}")
-
+        
     def forward(self, x: T.Tensor):
-        
-        neck_out = self.neck(*self.backbone(x))
-        
-        return self.head(neck_out)
-    
-    
+        o = self.backbone(x)
+        o = self.neck(*o)
+        o = self.head(o)
+        return o
+
 
 # class SpatialEncoder(nn.Module):
 #     def __init__(self, backbone: nn.Module, config: dict):

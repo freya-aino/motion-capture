@@ -28,30 +28,9 @@ would be extracted into respective models for
 '''
 
 @dataclass
-class CMUPanopticDatapoint:
-    pass # TODO
-
-@dataclass
-class Human36MDatapoint:
-    pass # TODO
-
-@dataclass
-class COCOFullBodyDatapoint:
-    pass # TODO
-
-@dataclass
 class Transform:
     position: np.ndarray # global
     rotation: Quaternion # local
-    position_dt: np.ndarray # global
-    rotation_dt: Quaternion # local
-
-    def __init__(self):
-        self.position = np.zeros((3), dtype=np.float32)
-        self.rotation = Quaternion()
-        self.position_dt = np.zeros((3), dtype=np.float32)
-        self.rotation_dt = Quaternion()
-        return self
 
 @dataclass
 class BoneInformation:
@@ -59,23 +38,16 @@ class BoneInformation:
     is_visible: bool
 
 @dataclass
-class AutoRigProBoneSkeleton:
+class Skeleton:
     # TODO: enter Auto-Rig pro export Bone hirarchy
     # HipL: BoneInformation
     # HipR: BoneInformation
-
-    def import_CMUPanoptic(self, cmp_panoptic: CMUPanopticDatapoint):
-        pass # TODO
-    def import_Human36M(self, human36m: Human36MDatapoint):
-        pass # TODO
-
-    def get_skeleton_root(self):
-        pass # TODO
+    pass
 
 @dataclass
 class AnimationState:
     timestamp: int
-    skeleton: AutoRigProBoneSkeleton
+    skeleton: Skeleton
 
 @dataclass
 class RawAnimationSequence:
@@ -86,6 +58,23 @@ class RawAnimationSequence:
 FUNCTIONS
 
 '''
+# TODO: specify (i think its for COCO / Halpe or both)
+def format_bodyparts_kpts(kpts):
+    return {
+        "head": kpts[0],
+        "left_shoulder": kpts[1],
+        "right_shoulder": kpts[2],
+        "left_elbow": kpts[3],
+        "right_elbow": kpts[4],
+        "left_hand": kpts[5],
+        "right_hand": kpts[6],
+        "left_hip": kpts[7],
+        "right_hip": kpts[8],
+        "left_knee": kpts[9],
+        "right_knee": kpts[10],
+        "left_foot": kpts[11],
+        "right_foot": kpts[12],
+    }
 
 def calibrate_global_scene_root():
     # from frames ?

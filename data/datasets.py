@@ -35,25 +35,16 @@ def scale_bbox(bbox: list, current_image_shape: list, new_image_shape: list) -> 
     
     return [x1, y1, w, h]
 
-def dynamic_bbox_padding(bbox: list, image: T.Tensor, padding_factor: float):
-    relative_fcp_w = int(padding_factor * 10 * (bbox[3] / image.shape[2]))
-    relative_fcp_h = int(padding_factor * 10 * (bbox[2] / image.shape[1]))
-    bbox[0] -= relative_fcp_w
-    bbox[1] -= relative_fcp_h
-    bbox[2] += relative_fcp_w * 2
-    bbox[3] += relative_fcp_h * 2
-    return bbox
-
 # ------------------------------------------------------------------------
 
 class WIDERFaceDataset(data.Dataset):
     
     def __init__(self,
-                 output_image_shape: tuple,
-                 max_number_of_faces: int,
-                 center_bbox: bool = True,
-                 train_path: str = "\\\\NAS\\Data\\datasets\\WIDER-Face\\train", 
-                 val_path: str = "\\\\NAS\\Data\\datasets\\WIDER-Face\\val"):
+        output_image_shape: tuple,
+        max_number_of_faces: int,
+        train_path: str, 
+        val_path: str,
+        center_bbox: bool = True):
         super(type(self), self).__init__()
         '''
 
@@ -161,15 +152,15 @@ class WIDERFaceDataset(data.Dataset):
 
 class WFLWDataset(data.Dataset):
 
-    def __init__(self,
-                 output_image_shape: tuple,
-                 face_crop_padding_factor: int = 10,
-                 image_path: str = "\\\\NAS\\Data\\datasets\\WFLW\\images",
-                 annotation_path: str = "\\\\NAS\\Data\\datasets\\WFLW\\annotations"):
+    def __init__(
+        self,
+        output_image_shape: tuple,
+        image_path: str,
+        annotation_path: str):
         super(type(self), self).__init__()
         '''
         file structure from the README:
-
+        
             coordinates of 98 landmarks (196) + 
             coordinates of upper left corner and lower right corner of detection rectangle (4) + 
             attributes annotations (6) + 
@@ -202,7 +193,6 @@ class WFLWDataset(data.Dataset):
 
         self.output_image_shape = (output_image_shape[1], output_image_shape[0])
         self.image_folder_path = image_path
-        self.face_crop_padding_factor = face_crop_padding_factor
 
         train_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "train.txt"))
         validation_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "validation.txt"))
@@ -222,7 +212,6 @@ class WFLWDataset(data.Dataset):
 
         bbox = datapoint["bbox"]
         bbox = [bbox[0], bbox[1], (bbox[2] - bbox[0]), (bbox[3] - bbox[1])]
-        bbox = dynamic_bbox_padding(bbox, image, self.face_crop_padding_factor)
         
         face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
 
@@ -255,93 +244,56 @@ class WFLWDataset(data.Dataset):
         }
 
 class COFWColorDataset(data.Dataset):
-    def __init__(self,
-                 output_image_shape: tuple,
-                 face_crop_padding_factor: int = 10,
-                 train_path: str = "\\\\NAS\\Data\\datasets\\COFW\\color_train.mat",
-                 test_path: str = "\\\\NAS\\Data\\datasets\\COFW\\color_test.mat"):
+    def __init__(self, output_image_shape: tuple, train_path: str, test_path: str):
+        
         super(type(self), self).__init__()
-
-        self.face_crop_padding_factor = face_crop_padding_factor
+        
         self.output_image_shape = [output_image_shape[1], output_image_shape[0]]
-
+        
         self.train_file, train_datapoints = self.extract_formatted_datapoints(train_path, is_train=True)
         self.test_file, test_datapoints = self.extract_formatted_datapoints(test_path, is_train=False)
         self.all_datapoints = [*train_datapoints, *test_datapoints]
-
+        
     def __len__(self):
         return len(self.all_datapoints)
-
+    
     def __getitem__(self, idx):
-
+        
         is_train, image_ref, bbox, phis = self.all_datapoints[idx]
-
+        
         image = self.train_file[image_ref] if is_train else self.test_file[image_ref]
         image = T.tensor(np.array(image), dtype=T.float32).permute(0, 2, 1)
-
+        
         bbox = [int(bb) for bb in bbox]
-        bbox = dynamic_bbox_padding(bbox, image, padding_factor=self.face_crop_padding_factor)
         face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
-
+        
         keypoints = T.tensor(phis, dtype=T.float32)[:58].reshape(2, 29).permute(1, 0)
         occlusion = T.tensor(phis, dtype=T.float32)[58:]
-
+        
         kp_scale_factor = T.tensor([face_image.shape[2], face_image.shape[1]])
         scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / kp_scale_factor * T.tensor(self.output_image_shape[::-1])
         face_image = resize(face_image, self.output_image_shape, antialias=True)
-
+        
         return {
             "image": face_image,
             "keypoints": scaled_keypoints,
             "occlusion": occlusion
         }
-
+        
     def extract_formatted_datapoints(self, path: str, is_train: bool):
-
+        
         file = h5py.File(path, "r")
         keys = list(file.get("/"))
-
+        
         IsT = np.array(file.get(keys[1])).squeeze()
         bboxes = np.array(file.get(keys[2])).squeeze().T
         phis = np.array(file.get(keys[3])).squeeze().T
-
+        
         return file, [(is_train, *p) for p in zip(IsT, bboxes, phis)]
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# TODO: specify (i think its for COCO / Halpe or both)
-def format_bodyparts_kpts(kpts):
-    return {
-        "head": kpts[0],
-        "left_shoulder": kpts[1],
-        "right_shoulder": kpts[2],
-        "left_elbow": kpts[3],
-        "right_elbow": kpts[4],
-        "left_hand": kpts[5],
-        "right_hand": kpts[6],
-        "left_hip": kpts[7],
-        "right_hip": kpts[8],
-        "left_knee": kpts[9],
-        "right_knee": kpts[10],
-        "left_foot": kpts[11],
-        "right_foot": kpts[12],
-    }
-
+# TODO: Finish this, missing load
 class COCODataset(data.Dataset):
     def __init__(self):
         super(type(self), self).__init__()
