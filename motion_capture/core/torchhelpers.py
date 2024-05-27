@@ -8,6 +8,7 @@ from quaternions import qmath
 def get_bbox_from_kpts(kpts: T.Tensor):
     
     # ! Not Tested
+    # TODO: different types of bboxes
     
     assert not kpts.isnan().any(), "all keypoints have to be not nan"
     

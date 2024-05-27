@@ -15,9 +15,8 @@ from torchvision.io import read_image
 
 # ------------------------------------------------------------------------
 
-# Segmentation for annotation: https://github.com/qubvel/segmentation_models.pytorch
-
-
+# Segmentation for classification: 
+# - https://github.com/qubvel/segmentation_models.pytorch
 
 # ------------------------------------------------------------------------
 
@@ -290,6 +289,10 @@ class COFWColorDataset(data.Dataset):
         phis = np.array(file.get(keys[3])).squeeze().T
         
         return file, [(is_train, *p) for p in zip(IsT, bboxes, phis)]
+
+
+
+
 
 
 

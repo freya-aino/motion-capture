@@ -2,9 +2,8 @@ import math
 import torch as T
 import torch.nn as nn
 
-from model.transformers import TransformerEncoderBlock
-from core.torchhelpers import positional_embedding
-
+from ..transformer.core import TransformerEncoderBlock
+from motion_capture.core.torchhelpers import positional_embedding
 
 
 class SimpleTransformerHead(nn.Module):
@@ -13,25 +12,26 @@ class SimpleTransformerHead(nn.Module):
         input_size,
         output_size,
         output_length,
+        width = 1024,
         width_multiple = 0.25):
         
         super(type(self), self).__init__()
         
-        scaled_1024 = int(1024 * width_multiple)
+        self.latent_size = int(width * width_multiple)
         
         self.output_length = output_length
         
         self.input_1d_conv = nn.Sequential(
-            nn.Conv1d(input_size, scaled_1024, kernel_size=1, stride=1, padding=0, groups=1),
+            nn.Conv1d(input_size, self.latent_size, kernel_size=1, stride=1, padding=0, groups=1),
             nn.SiLU(),
-            nn.BatchNorm1d(scaled_1024)
+            nn.BatchNorm1d(self.latent_size)
         )
         
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, scaled_1024), requires_grad=False)
+        self.positional_embedding = nn.Parameter(positional_embedding(20*20, self.latent_size), requires_grad=False)
         
-        self.self_attention = TransformerEncoderBlock(scaled_1024, output_size)
+        self.self_attention = TransformerEncoderBlock(self.latent_size, output_size)
         
-        self.internal_state = nn.Parameter(T.rand(output_length, scaled_1024, dtype=T.float32), requires_grad=True)
+        self.internal_state = nn.Parameter(T.rand(output_length, self.latent_size, dtype=T.float32), requires_grad=True)
         
     def forward(self, x: T.Tensor) -> T.Tensor:
         x = self.input_1d_conv(x).permute(0, 2, 1)
@@ -56,25 +56,24 @@ class CascadedTransformerHead(nn.Module):
         self, 
         input_size,
         output_size,
+        width = 1024,
         width_multiple = 0.25):
         super(type(self), self).__init__()
         
-        scaled_256 = int(256 * width_multiple)
-        scaled_512 = int(512 * width_multiple)
-        scaled_1024 = int(1024 * width_multiple)
+        self.latent_size = int(width * width_multiple)
         
-        self.input_1d_conv = nn.Conv1d(input_size, scaled_1024, kernel_size=1, stride=1, padding=0, groups=1)
-        self.input_1d_conv_memory = nn.Conv1d(input_size, scaled_1024, kernel_size=1, stride=1, padding=0, groups=1)
+        self.input_1d_conv = nn.Conv1d(input_size, self.latent_size, kernel_size=1, stride=1, padding=0, groups=1)
+        self.input_1d_conv_memory = nn.Conv1d(input_size, self.latent_size, kernel_size=1, stride=1, padding=0, groups=1)
         
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, scaled_1024), requires_grad=False)
+        self.positional_embedding = nn.Parameter(positional_embedding(20*20, self.latent_size), requires_grad=False)
         
         self.forward_encoder = nn.Sequential(
-            nn.Linear(scaled_1024, scaled_1024),
+            nn.Linear(self.latent_size, self.latent_size),
             nn.SiLU(),
-            nn.BatchNorm1d(scaled_1024),
-            nn.Linear(scaled_1024, scaled_1024),
+            nn.BatchNorm1d(self.latent_size),
+            nn.Linear(self.latent_size, self.latent_size),
             nn.SiLU(),
-            nn.BatchNorm1d(scaled_1024)
+            nn.BatchNorm1d(self.latent_size)
         )
         
         self.R = nn.Parameter(T.rand(output_size, dtype=T.float32), requires_grad=True)
@@ -112,15 +111,16 @@ class DeformableAttentionHead(nn.Module):
         self, 
         input_size,
         output_size,
+        width = 1024,
         width_multiple = 0.25):
         
         raise NotImplementedError()
 
         super(type(self), self).__init__()
         
-        scaled_256 = int(256 * width_multiple)
-        scaled_512 = int(512 * width_multiple)
-        scaled_1024 = int(1024 * width_multiple)
+        self.latent_size = int((width * width_multiple))
+        
+        self.latent_size = int(self.latent_size * width_multiple)
         
         self.positional_embedding = nn.Parameter(positional_embedding(20*20, input_size), requires_grad=False)
         

@@ -2,8 +2,8 @@ import math
 import torch as T
 import torch.nn as nn
 
-from model.conv import ConvBlock, C2f
-from core.torchhelpers import positional_embedding
+from .core import ConvBlock, C2f
+from motion_capture.core.torchhelpers import positional_embedding
 
 
 class PyramidTransformerNeck(nn.Module):
@@ -17,40 +17,45 @@ class PyramidTransformerNeck(nn.Module):
         self, 
         output_size,
         depth_multiple = 0.33,
+        width = 1024,
         width_multiple = 0.25,
         original_positional_embedding_size: int = 256):
         
         super(type(self), self).__init__()
         
-        scaled_128 = int(128 * width_multiple)
-        scaled_256 = int(256 * width_multiple)
-        scaled_512 = int(512 * width_multiple)
-        scaled_1024 = int(1024 * width_multiple)
+        raise NotImplementedError
+        
+        self.latent_sizes = {
+            "encoder": int(width * width_multiple),
+            "hidden": int(512 * width_multiple),
+            "hidden_3": int(128 * width_multiple),
+            "hidden_2": int(256 * width_multiple),
+        }
         
         self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
         
-        self.POS_ENC3 = positional_embedding(20*20, scaled_1024)
+        self.POS_ENC3 = positional_embedding(20*20, self.latent_sizes["encoder"])
         
-        self.POS_ENC2 = positional_embedding(40*40, scaled_512)
-        self.MHA2 = nn.MultiheadAttention(embed_dim=scaled_512, num_heads=8)
-        self.LN2_1 = nn.LayerNorm(scaled_512)
-        self.FFN2 = nn.Linear(scaled_512, scaled_512)
-        self.LN2_2 = nn.LayerNorm(scaled_512)
+        self.POS_ENC2 = positional_embedding(40*40, self.latent_sizes["hidden"])
+        self.MHA2 = nn.MultiheadAttention(embed_dim=self.latent_sizes["hidden"], num_heads=8)
+        self.LN2_1 = nn.LayerNorm(self.latent_sizes["hidden"])
+        self.FFN2 = nn.Linear(self.latent_sizes["hidden"], self.latent_sizes["hidden"])
+        self.LN2_2 = nn.LayerNorm(self.latent_sizes["hidden"])
         
-        self.POS_ENC1 = positional_embedding(80*80, scaled_256)
-        self.MHA1 = nn.MultiheadAttention(embed_dim=scaled_256, num_heads=8)
-        self.LN1_1 = nn.LayerNorm(scaled_256)
-        self.FFN1 = nn.Linear(scaled_256, scaled_128)
-        self.LN1_2 = nn.LayerNorm(scaled_128)
+        self.POS_ENC1 = positional_embedding(80*80, self.latent_sizes["hidden_2"])
+        self.MHA1 = nn.MultiheadAttention(embed_dim=self.latent_sizes["hidden_2"], num_heads=8)
+        self.LN1_1 = nn.LayerNorm(self.latent_sizes["hidden_2"])
+        self.FFN1 = nn.Linear(self.latent_sizes["hidden_2"], self.latent_sizes["hidden_3"])
+        self.LN1_2 = nn.LayerNorm(self.latent_sizes["hidden_3"])
         
-        self.LL_MSA3 = nn.MultiheadAttention(scaled_1024, num_heads=8)
-        self.LM_MSA3 = nn.MultiheadAttention(scaled_1024, num_heads=8)
+        self.LL_MSA3 = nn.MultiheadAttention(self.latent_sizes["encoder"], num_heads=8)
+        self.LM_MSA3 = nn.MultiheadAttention(self.latent_sizes["encoder"], num_heads=8)
         
-        self.LL_MSA2 = nn.MultiheadAttention(scaled_512, num_heads=8)
-        self.LM_MSA2 = nn.MultiheadAttention(scaled_512, num_heads=8)
+        self.LL_MSA2 = nn.MultiheadAttention(self.latent_sizes["hidden"], num_heads=8)
+        self.LM_MSA2 = nn.MultiheadAttention(self.latent_sizes["hidden"], num_heads=8)
         
-        self.LL_MSA1 = nn.MultiheadAttention(scaled_256, num_heads=8)
-        self.LM_MSA1 = nn.MultiheadAttention(scaled_256, num_heads=8)
+        self.LL_MSA1 = nn.MultiheadAttention(self.latent_sizes["hidden_2"], num_heads=8)
+        self.LM_MSA1 = nn.MultiheadAttention(self.latent_sizes["hidden_2"], num_heads=8)
         
     def forward(self, x1: T.Tensor, x2: T.Tensor, x3: T.Tensor) -> T.Tensor: 
         
@@ -114,47 +119,50 @@ class PyramidTransformerNeck(nn.Module):
         pass
 
 
-class UpsampleTransformerNeck(nn.Module):
+class UpsampleCrossAttentionrNeck(nn.Module):
     def __init__(
         self, 
         output_size,
         depth_multiple = 0.33,
+        width = 1024,
         width_multiple = 0.25,
         original_positional_embedding_size: int = 256):
         super(type(self), self).__init__()
         
-        scaled_256 = int(256 * width_multiple)
-        scaled_512 = int(512 * width_multiple)
-        scaled_1024 = int(1024 * width_multiple)
+        self.latent_sizes = {
+            "codec": int(width * width_multiple), # both for encoder and decoder input/output sizes
+            "latent": int(width / 2 * width_multiple), # for the latent space of the encoder/decoder
+            "latent_2": int(width / 4 * width_multiple), # latent space
+        }
         scaled_positional_embedding_size = int(original_positional_embedding_size * width_multiple)
         
         self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
         
         self.reverse1 = nn.Sequential(
-            C2f(scaled_1024 + scaled_512, scaled_512, kernel_size=1, n=int(3*depth_multiple), shortcut=False)
+            C2f(self.latent_sizes["codec"] + self.latent_sizes["latent"], self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False)
         )
         self.reverse2 = nn.Sequential(
-            C2f(scaled_512 + scaled_256, scaled_512, kernel_size=1, n=int(3*depth_multiple), shortcut=False),
-            ConvBlock(scaled_512, scaled_512, kernel_size=3, stride=2, padding=1)
+            C2f(self.latent_sizes["latent"] + self.latent_sizes["latent_2"], self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False),
+            ConvBlock(self.latent_sizes["latent"], self.latent_sizes["latent"], kernel_size=3, stride=2, padding=1)
         )
         self.reverse3 = nn.Sequential(
-            C2f(scaled_512 * 2, scaled_512, kernel_size=1, n=int(3*depth_multiple), shortcut=False),
-            ConvBlock(scaled_512, scaled_1024, kernel_size=3, stride=2, padding=1)
+            C2f(self.latent_sizes["latent"] * 2, self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False),
+            ConvBlock(self.latent_sizes["latent"], self.latent_sizes["codec"], kernel_size=3, stride=2, padding=1)
         )
         
-        self.Q_encoder = ConvBlock(scaled_1024, scaled_1024, kernel_size=1, stride=1, padding=0)
-        self.K_encoder = ConvBlock(scaled_1024, scaled_1024, kernel_size=1, stride=1, padding=0)
+        self.Q_encoder = ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0)
+        self.K_encoder = ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0)
         self.V_encoder = nn.Sequential(
-            # ConvBlock(scaled_1024, scaled_1024, kernel_size=1, stride=1, padding=0),
-            # C2f(scaled_1024, scaled_1024, kernel_size=1, n=int(3*depth_multiple), shortcut=True),
-            # ConvBlock(scaled_1024, scaled_1024, kernel_size=1, stride=1, padding=0),
-            # C2f(scaled_1024, scaled_1024, kernel_size=1, n=int(3*depth_multiple), shortcut=True),
-            ConvBlock(scaled_1024, scaled_1024 + scaled_positional_embedding_size, kernel_size=1, stride=1, padding=0)
+            # ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0),
+            # C2f(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, n=int(3*depth_multiple), shortcut=True),
+            # ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0),
+            # C2f(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, n=int(3*depth_multiple), shortcut=True),
+            ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"] + scaled_positional_embedding_size, kernel_size=1, stride=1, padding=0)
         )
         
         self.positional_embedding = nn.Parameter(positional_embedding(20*20, scaled_positional_embedding_size), requires_grad=False)
         
-        self.output_1d_conv = nn.Conv1d(scaled_1024 + scaled_positional_embedding_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
+        self.output_1d_conv = nn.Conv1d(self.latent_sizes["codec"] + scaled_positional_embedding_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
         
     def forward(self, x1: T.Tensor, x2: T.Tensor, x3: T.Tensor) -> T.Tensor: 
         # x1, x2, x3 in order: middle of the backbone to final layer output

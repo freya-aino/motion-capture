@@ -2,10 +2,9 @@ import time
 import torch as T
 import torch.nn as nn
 
-from model.conv import Backbone
-from model.conv_necks import UpsampleTransformerNeck
-from model.conv_heads import SimpleTransformerHead
-
+from .convolution.backbones import Backbone
+from .convolution.necks import UpsampleCrossAttentionrNeck
+from .convolution.heads import SimpleTransformerHead
 
 
 class FullConvModel(nn.Module):
@@ -26,9 +25,9 @@ class FullConvModel(nn.Module):
         super(type(self), self).__init__()
         
         self.backbone = Backbone(depth_multiple, width_multiple)
-        self.neck = UpsampleTransformerNeck(neck_output_size, depth_multiple, width_multiple)
+        self.neck = UpsampleCrossAttentionrNeck(neck_output_size, depth_multiple=depth_multiple, width_multiple=width_multiple)
         
-        self.head = SimpleTransformerHead(neck_output_size, head_output_size, head_output_length, depth_multiple)
+        self.head = SimpleTransformerHead(neck_output_size, head_output_size, head_output_length, width_multiple=width_multiple)
         
         print(f"running with neck: {self.neck.__class__}")
         

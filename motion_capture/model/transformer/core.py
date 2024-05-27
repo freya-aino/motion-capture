@@ -12,7 +12,7 @@ class TransformerEncoderBlock(nn.Module):
         self.LN1 = nn.LayerNorm(normalized_shape=input_dim, eps=0.00001, elementwise_affine=True)
         self.LN2 = nn.LayerNorm(normalized_shape=input_dim, eps=0.00001, elementwise_affine=True)
         
-        self.MSA = nn.MultiheadAttention(
+        self.MHA = nn.MultiheadAttention(
             embed_dim=input_dim,
             num_heads=1,
             dropout=0,
@@ -30,10 +30,13 @@ class TransformerEncoderBlock(nn.Module):
         
         self.residual_connection = nn.Sequential(nn.Linear(input_dim, output_dim), nn.ELU())
         
-    def forward(self, x: T.Tensor):
+    def forward(self, x: T.Tensor, return_attention_matrix: bool = False):
         residual = self.residual_connection(x)
         x = self.LN1(x)
-        x, attention_matrix = self.MSA(x, x, x)
+        x, attention_matrix = self.MHA(x, x, x)
         x = self.MLP(self.LN2(x))
         x = T.add(residual, x)
+        
+        if return_attention_matrix:
+            return x, attention_matrix
         return x
