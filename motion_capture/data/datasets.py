@@ -32,7 +32,7 @@ def scale_bbox(bbox: list, current_image_shape: list, new_image_shape: list) -> 
     y1 = y1 / current_image_shape[1] * new_image_shape[1]
     h = h / current_image_shape[1] * new_image_shape[1]
     
-    return [x1, y1, w, h]
+    return [*map(int, [x1, y1, w, h])]
 
 # ------------------------------------------------------------------------
 
@@ -44,20 +44,17 @@ class WIDERFaceDataset(data.Dataset):
         train_path: str, 
         val_path: str,
         center_bbox: bool = True):
-        super(type(self), self).__init__()
         '''
-
             The structure of each entery is:
                 File name
                 Number of faces
                 [
                     [x1, y1, w, h, blur, expression, illumination, invalid, occlusion, pose]
                 ]
-
             (the last line is repeated for the number of faces that exist in the image)
             the formatted output looks like this (example):
                 {
-                    'image_path': '\\\\NAS\\Data\\datasets\\WIDER-Face\\train\\images\\0--Parade\\0_Parade_marchingband_1_849.jpg',
+                    'image_path': '.\\WIDER-Face\\train\\images\\0--Parade\\0_Parade_marchingband_1_849.jpg',
                     'number_of_faces': 1,
                     'faces': [
                         {
@@ -67,6 +64,7 @@ class WIDERFaceDataset(data.Dataset):
                     ]
                 }
         '''
+        super(type(self), self).__init__()
 
         self.output_image_shape = (output_image_shape[1], output_image_shape[0]) # H, W
         self.max_number_of_faces = max_number_of_faces
@@ -84,17 +82,17 @@ class WIDERFaceDataset(data.Dataset):
 
         annotation = self.annotation_datapoints[idx]
 
-        image = read_image(annotation["image_path"]).to(dtype=T.float32)
+        image = read_image(annotation["imagePath"]).to(dtype=T.float32)
 
-        bboxes = [self.format_bbox(annotation["faces"][i]["bbox"], image.shape[1:]) for i in range(min(annotation["number_of_faces"], self.max_number_of_faces))]
+        bboxes = [self.format_bbox(annotation["faces"][i]["faceBbox"], image.shape[1:]) for i in range(min(annotation["numberOfFaces"], self.max_number_of_faces))]
         padding = [T.zeros(4, dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
-        bboxes = T.cat([*bboxes, *padding])
+        bboxes = T.cat([*bboxes, *padding]).reshape(-1, 4)
 
         image = resize(image, self.output_image_shape, antialias=True)
 
         datapoint = {
             "image": image,
-            "face_bbox": bboxes
+            "faceBbox": bboxes
         }
 
         return datapoint
@@ -138,13 +136,13 @@ class WIDERFaceDataset(data.Dataset):
                         h = h / 2
 
                     formated_faces.append({
-                        "bbox": [x1, y1, w, h],
+                        "faceBbox": [x1, y1, w, h],
                         "indicators": [int(x) for x in face[4:]]
                     })
                 
                 formated_datapoints.append({
-                    "image_path": os.path.join(path, "images", image_folder, image_name),
-                    "number_of_faces": number_of_faces,
+                    "imagePath": os.path.join(path, "images", image_folder, image_name),
+                    "numberOfFaces": number_of_faces,
                     "faces": formated_faces
                 })
         return formated_datapoints
@@ -153,10 +151,11 @@ class WFLWDataset(data.Dataset):
 
     def __init__(
         self,
-        output_image_shape: tuple,
+        output_full_image_shape: tuple,
+        output_face_image_shape: tuple,
         image_path: str,
-        annotation_path: str):
-        super(type(self), self).__init__()
+        annotation_path: str,
+        center_bbox: bool = True):
         '''
         file structure from the README:
         
@@ -189,39 +188,65 @@ class WFLWDataset(data.Dataset):
                 blur->1
             image_name
         '''
-
-        self.output_image_shape = (output_image_shape[1], output_image_shape[0])
+        super(type(self), self).__init__()
+        
+        print("WARNING: WFLW dataset currently returns one image / face pair even when there are multiple faces in the image")
+        
+        self.center_bbox = center_bbox
+        
+        self.output_full_image_shape = (output_full_image_shape[1], output_full_image_shape[0])
+        self.output_face_image_shape = (output_face_image_shape[1], output_face_image_shape[0])
+        
         self.image_folder_path = image_path
-
+        
         train_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "train.txt"))
         validation_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "validation.txt"))
-
+        
         self.all_datapoints = [*train_datapoints, *validation_datapoints]
-
+        
     def __len__(self):
         return (len(self.all_datapoints))
-
+    
     def __getitem__(self, idx):
-
+        
         datapoint = self.all_datapoints[idx]
-
-        image = read_image(datapoint["image_path"]).to(T.float32)
-        keypoints = T.tensor(datapoint["kpts"], dtype=T.float32)
+        
+        full_image = read_image(datapoint["imagePath"]).to(T.float32)
+        keypoints = T.tensor(datapoint["keypoints"], dtype=T.float32)
         indicators = T.tensor(datapoint["indicators"], dtype=T.float32)
-
-        bbox = datapoint["bbox"]
+        bbox = datapoint["faceBbox"]
         bbox = [bbox[0], bbox[1], (bbox[2] - bbox[0]), (bbox[3] - bbox[1])]
         
-        face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
-
-        kp_scale_factor = T.tensor([face_image.shape[2], face_image.shape[1]])
-        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / kp_scale_factor * T.tensor(self.output_image_shape[::-1])
-
-        face_image = resize(face_image, self.output_image_shape, antialias=True)
-
+        # create face crop
+        face_image = crop(full_image, bbox[1], bbox[0], bbox[3], bbox[2])
+        
+        # scale keypoints acording to the new face crop size
+        # kp_scale_factor = T.tensor([face_image.shape[2], face_image.shape[1]])
+        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / T.tensor(face_image.shape[::-1][:2]) * T.tensor(self.output_face_image_shape[::-1])
+        
+        # scale face crop
+        face_image = resize(face_image, self.output_face_image_shape, antialias=True)
+        
+        # scale global keypoints acording to the new full image size
+        keypoints = keypoints / T.tensor(full_image.shape[::-1][:2]) * T.tensor(self.output_full_image_shape[::-1]).float()
+        
+        # scale bounding boxes acording to the new full image size
+        bbox = scale_bbox(bbox, full_image.shape[::-1], self.output_full_image_shape[::-1])
+        
+        # scale full image
+        full_image = resize(full_image, self.output_full_image_shape, antialias=True)
+        
+        
+        # create center bounding boxes
+        if self.center_bbox:
+            bbox = [bbox[0] + (bbox[2] / 2), bbox[1] + (bbox[3] / 2), bbox[2] / 2, bbox[3] / 2]
+        
         return {
-            "image": face_image, # in format [Channels, Height, Width]
-            "keypoints": scaled_keypoints, # in format [Width, Height]
+            "fullImage": full_image,
+            "faceBbox": bbox,
+            "faceImage": face_image, # in format [Channels, Height, Width]
+            "globalKeypoints": keypoints, # in format [Width, Height] in image size
+            "localKeypoints": scaled_keypoints, # in format [Width, Height] in face crop size
             "indicators": indicators
         }
 
@@ -236,9 +261,9 @@ class WFLWDataset(data.Dataset):
     def process_annotation(self, line):
         line = line.split(" ")
         return {
-            "image_path": os.path.join(self.image_folder_path, line[-1])[:-1],
-            "kpts": np.array([float(a) for a in line[:196]]).reshape((98, 2)),
-            "bbox": np.array([int(ell) for ell in line[196:200]]),
+            "imagePath": os.path.join(self.image_folder_path, line[-1])[:-1],
+            "keypoints": np.array([float(a) for a in line[:196]]).reshape((98, 2)),
+            "faceBbox": np.array([int(ell) for ell in line[196:200]], dtype=np.int16),
             "indicators": np.array([int(ell) for ell in line[200:206]])
         }
 
@@ -290,6 +315,16 @@ class COFWColorDataset(data.Dataset):
         
         return file, [(is_train, *p) for p in zip(IsT, bboxes, phis)]
 
+# TODO
+class MPII(data.Dataset):
+    
+    def __init__(
+        self,
+        annotation_json_path: str, 
+        image_folder_path: str):
+        super(type(self), self).__init__()
+        
+        
 
 
 
@@ -784,24 +819,6 @@ class HalpeFullBody(data.Dataset):
         del out
         return out_
 
-# TODO
-class MPII(data.Dataset):
-    
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
-
-# TODO
-class WIDERFACE(data.Dataset):
-    
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
-
-# TODO
-class COFW(data.Dataset):
-    
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
-        
 # TODO
 class DexYCB(data.Dataset):
     
