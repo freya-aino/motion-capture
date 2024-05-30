@@ -26,13 +26,13 @@ def scale_bbox(bbox: list, current_image_shape: list, new_image_shape: list) -> 
     '''
     
     x1, y1, w, h = bbox
-
+    
     x1 = x1 / current_image_shape[0] * new_image_shape[0]
     w = w / current_image_shape[0] * new_image_shape[0]
     y1 = y1 / current_image_shape[1] * new_image_shape[1]
     h = h / current_image_shape[1] * new_image_shape[1]
     
-    return [*map(int, [x1, y1, w, h])]
+    return [x1, y1, w, h]
 
 # ------------------------------------------------------------------------
 
@@ -243,7 +243,7 @@ class WFLWDataset(data.Dataset):
         
         return {
             "fullImage": full_image,
-            "faceBbox": bbox,
+            "faceBbox": T.tensor(bbox,dtype=T.float32),
             "faceImage": face_image, # in format [Channels, Height, Width]
             "globalKeypoints": keypoints, # in format [Width, Height] in image size
             "localKeypoints": scaled_keypoints, # in format [Width, Height] in face crop size
@@ -268,14 +268,22 @@ class WFLWDataset(data.Dataset):
         }
 
 class COFWColorDataset(data.Dataset):
-    def __init__(self, output_image_shape: tuple, train_path: str, test_path: str):
+    def __init__(
+        self, 
+        output_full_image_shape: tuple, 
+        output_face_image_shape: tuple,
+        data_path: str,
+        center_bbox: bool = True):
         
         super(type(self), self).__init__()
         
-        self.output_image_shape = [output_image_shape[1], output_image_shape[0]]
+        self.center_bbox = center_bbox
         
-        self.train_file, train_datapoints = self.extract_formatted_datapoints(train_path, is_train=True)
-        self.test_file, test_datapoints = self.extract_formatted_datapoints(test_path, is_train=False)
+        self.output_full_image_shape = [output_full_image_shape[1], output_full_image_shape[0]]
+        self.output_face_image_shape = [output_face_image_shape[1], output_face_image_shape[0]]
+        
+        self.train_file, train_datapoints = self.extract_formatted_datapoints(os.path.join(data_path, "color_train.mat"), is_train=True)
+        self.test_file, test_datapoints = self.extract_formatted_datapoints(os.path.join(data_path, "color_test.mat"), is_train=False)
         self.all_datapoints = [*train_datapoints, *test_datapoints]
         
     def __len__(self):
@@ -285,25 +293,45 @@ class COFWColorDataset(data.Dataset):
         
         is_train, image_ref, bbox, phis = self.all_datapoints[idx]
         
+        bbox = [*map(int, bbox)]
+        
         image = self.train_file[image_ref] if is_train else self.test_file[image_ref]
         image = T.tensor(np.array(image), dtype=T.float32).permute(0, 2, 1)
-        
-        bbox = [int(bb) for bb in bbox]
-        face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
         
         keypoints = T.tensor(phis, dtype=T.float32)[:58].reshape(2, 29).permute(1, 0)
         occlusion = T.tensor(phis, dtype=T.float32)[58:]
         
-        kp_scale_factor = T.tensor([face_image.shape[2], face_image.shape[1]])
-        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / kp_scale_factor * T.tensor(self.output_image_shape[::-1])
-        face_image = resize(face_image, self.output_image_shape, antialias=True)
+        # crop face
+        face_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
+        
+        # scale keypoints acording to the new face crop size
+        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / T.tensor(face_image.shape[::-1][:2]) * T.tensor(self.output_face_image_shape[::-1])
+        
+        # scale face crop
+        face_image = resize(face_image, self.output_face_image_shape, antialias=True)
+        
+        # scale global keypoints acording to the new full image size
+        keypoints = keypoints / T.tensor(image.shape[::-1][:2]) * T.tensor(self.output_full_image_shape[::-1]).float()
+        
+        # scale bounding boxes acording to the new full image size
+        bbox = scale_bbox(bbox, image.shape[::-1], self.output_full_image_shape[::-1])
+        
+        # center bounding boxes
+        if self.center_bbox:
+            bbox = [bbox[0] + (bbox[2] / 2), bbox[1] + (bbox[3] / 2), bbox[2] / 2, bbox[3] / 2]
+        
+        # scale full image
+        image = resize(image, self.output_full_image_shape, antialias=True)
         
         return {
-            "image": face_image,
-            "keypoints": scaled_keypoints,
-            "occlusion": occlusion
+            "fullImage": image,
+            "faceImage": face_image,
+            "faceBbox": T.tensor(bbox, dtype=T.float32),
+            "localKeypoints": scaled_keypoints,
+            "globalKeypoints": keypoints,
+            "keypointOcclusion": occlusion
         }
-        
+    
     def extract_formatted_datapoints(self, path: str, is_train: bool):
         
         file = h5py.File(path, "r")
@@ -315,16 +343,75 @@ class COFWColorDataset(data.Dataset):
         
         return file, [(is_train, *p) for p in zip(IsT, bboxes, phis)]
 
-# TODO
-class MPII(data.Dataset):
+class MPIIDataset(data.Dataset):
     
     def __init__(
         self,
-        annotation_json_path: str, 
-        image_folder_path: str):
+        output_full_image_shape: tuple,
+        output_person_image_shape: tuple,
+        annotation_path: str,
+        image_folder_path: str,
+        center_bbox: bool = True):
         super(type(self), self).__init__()
         
+        self.output_full_image_shape = [output_full_image_shape[1], output_full_image_shape[0]]
+        self.output_person_image_shape = [output_person_image_shape[1], output_person_image_shape[0]]
         
+        self.center_bbox = center_bbox
+        
+        self.image_folder_path = image_folder_path
+        
+        with open(os.path.join(annotation_path, "trainval.json")) as f:
+            self.datapoints = json.load(f)
+        
+    def __len__(self):
+        return len(self.datapoints)
+    
+    def __getitem__(self, idx):
+        dp = self.datapoints[idx]
+        
+        image = read_image(os.path.join(self.image_folder_path, dp["image"]))
+        keypoints = T.tensor(dp["joints"], dtype=T.float32)
+        visibility = T.tensor(dp["joints_vis"], dtype=T.float32)
+        scale = T.tensor(dp["scale"], dtype=T.float32)
+        
+        visible_keypoints = keypoints[visibility == 1]
+        
+        # calculate bounding box from visible keypoints
+        bbox = T.stack([visible_keypoints.min(dim=0)[0], visible_keypoints.max(dim=0)[0]])
+        bbox = [*map(int, T.cat([bbox[0], bbox[1] - bbox[0]]))]
+        
+        # crop image and scale
+        person_image = crop(image, bbox[1], bbox[0], bbox[3], bbox[2])
+        
+        # scale keypoints to person image size
+        scaled_keypoints = (keypoints - T.tensor(bbox[:2])) / T.tensor(person_image.shape[::-1][:2]) * T.tensor(self.output_person_image_shape[::-1]).float()
+        
+        # scale person image
+        person_image = resize(person_image, self.output_person_image_shape).to(dtype=T.float32)
+        
+        # scale keypoints to new image size
+        keypoints = keypoints / T.tensor(image.shape[::-1][:2]) * T.tensor(self.output_full_image_shape[::-1]).float()
+        
+        # scale bbox
+        bbox = scale_bbox(bbox, image.shape[::-1][:2], self.output_full_image_shape)
+        
+        # center bbox
+        if self.center_bbox:
+            bbox = [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2, bbox[2] / 2, bbox[3] / 2]
+        
+        # scale image
+        image = resize(image, self.output_full_image_shape).to(dtype=T.float32)
+        
+        return {
+            "fullImage": image,
+            "personImage": person_image,
+            "bbox": T.tensor(bbox, dtype=T.float32),
+            "globalKeypoints": keypoints,
+            "localKeypoints": scaled_keypoints,
+            "keypointVisibility": visibility,
+            "scale": scale,
+        }
 
 
 
