@@ -13,6 +13,8 @@ from torch.utils import data
 from torchvision.transforms.functional import resize, crop
 from torchvision.io import read_image
 
+from torch.nn.functional import one_hot
+
 # ------------------------------------------------------------------------
 
 # Segmentation for classification: 
@@ -431,6 +433,256 @@ class MPIIDataset(data.Dataset):
             "localKeypoints": local_scaled_keypoints,
             "keypointVisibility": visibility,
         }
+
+
+class COCO2017PersonKeypointsDataset(data.Dataset):
+    
+    def __init__(
+        self,
+        image_folder_path: str,
+        annotation_folder_path: str,
+        output_full_image_shape_WH: tuple,
+        output_person_image_shape_WH: tuple,
+        max_segmentation_points: int = 100,
+        center_bbox: bool = True,
+        filter_is_crowd: bool = True,
+        load_val_only: bool = False):
+        
+        super().__init__()
+        
+        print("WARINIG: COCO2017PersonKeypointsDataset removes all entries with multiple segmentations")
+        
+        self.center_bbox = center_bbox
+        self.output_full_image_shape = output_full_image_shape_WH
+        self.output_person_image_shape = output_person_image_shape_WH
+        
+        self.max_segmentation_points = max_segmentation_points
+        
+        # get all datapoints
+        images = []
+        annotations = []
+        if not load_val_only:
+            with open(os.path.join(annotation_folder_path, "person_keypoints_train2017.json"), "r") as f:
+                j = json.load(f)
+                images.extend(j["images"])
+                annotations.extend(j["annotations"])
+        with open(os.path.join(annotation_folder_path, "person_keypoints_val2017.json"), "r") as f:
+            j = json.load(f)
+            images.extend(j["images"])
+            annotations.extend(j["annotations"])
+        
+        # get all image_id : image_path pairs
+        self.image_path_map = {}
+        for image in images:
+            self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
+        
+        # gruop annotations by image_id
+        image_annotation_map = {}
+        for annotation in annotations:
+            if annotation["image_id"] not in image_annotation_map:
+                image_annotation_map[annotation["image_id"]] = []
+            
+            formatted_annotation = self.format_datapoint(annotation, filter_is_crowd)
+            if formatted_annotation is not None:
+                image_annotation_map[annotation["image_id"]].append(formatted_annotation)
+        
+        # annotations_by_image = pd.DataFrame(annotations).groupby("image_id").apply(lambda x: x.to_dict(orient="records")).to_list()
+        
+        self.all_datapoints = list(image_annotation_map.values())
+        
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        image_datapoints = self.all_datapoints[idx]
+        
+        full_image = read_image(image_datapoints[0]["imagePath"])
+        
+        out = []
+        for datapoint in image_datapoints:
+            bbox = datapoint["bbox"]
+            keypoints = datapoint["keypoints"]
+            visibility = datapoint["keypointVisibility"]
+            validity = datapoint["keypointValidity"]
+            segmentation = datapoint["segmentation"]
+            
+            # padd segmentation to maxMsegmentation_points
+            padding = T.zeros((self.max_segmentation_points - segmentation.shape[0], 2), dtype=T.int16)
+            segmentation = T.cat([segmentation, padding], dim=0)
+            
+            # resize bbox, keypoints and segmentation to now full image
+            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], self.output_full_image_shape)
+            full_scaled_keypoints = scale_points(keypoints, full_image.shape[::-1][:2], self.output_full_image_shape)
+            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], self.output_full_image_shape)
+            
+            if self.center_bbox:
+                full_scaled_bbox = center_bbox(full_scaled_bbox)
+            
+            # crop person image and scale keypoints, and segmentation
+            person_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+            local_scaled_keypoints = scale_points(keypoints - bbox[0], person_image.shape[::-1][:2], self.output_person_image_shape)
+            local_scaled_segmentation = scale_points(segmentation - bbox[0], person_image.shape[::-1][:2], self.output_person_image_shape)
+            
+            # resize person image
+            person_image = resize(person_image, self.output_person_image_shape[::-1])
+            
+            out.append({
+                "personImage": person_image,
+                "personBbox": full_scaled_bbox,
+                "keypointVisibility": visibility,
+                "keypointValidity": validity,
+                "localKeypoints": local_scaled_keypoints,
+                "globalKeypoints": full_scaled_keypoints,
+                "localSegmentation": local_scaled_segmentation,
+                "globalSegmentation": full_scaled_segmentation,
+                # "category": T.tensor(datapoint["category"])
+            })
+        
+        # resize full image
+        full_image = resize(full_image, self.output_full_image_shape[::-1])
+        
+        # return concatenation of all datapoints
+        return {
+            "fullImage": full_image,
+            "personImages": T.stack([dp["personImage"] for dp in out]),
+            "personBboxes": T.stack([dp["personBbox"] for dp in out]),
+            "keypointVisibility": T.stack([dp["keypointVisibility"] for dp in out]),
+            "keypointValidity": T.stack([dp["keypointValidity"] for dp in out]),
+            "localKeypoints": T.stack([dp["localKeypoints"] for dp in out]),
+            "globalKeypoints": T.stack([dp["globalKeypoints"] for dp in out]),
+            "localSegmentations": T.stack([dp["localSegmentation"] for dp in out]),
+            "globalSegmentations": T.stack([dp["globalSegmentation"] for dp in out]),
+        }
+        
+        
+    
+    def format_datapoint(self, datapoint, filter_is_crowd):
+        
+        if filter_is_crowd and datapoint["iscrowd"]:
+            return None
+        
+        # remove etries with multiple segmentations
+        if len(datapoint["segmentation"]) == 0 or len(datapoint["segmentation"]) > 1:
+            return None
+        
+        segmentations = T.tensor(datapoint["segmentation"][0]).reshape(-1, 2)
+        
+        if segmentations.shape[0] > self.max_segmentation_points:
+            return None
+        
+        keypoints = T.tensor(datapoint["keypoints"]).reshape(-1, 3)
+        
+        return {
+            "imagePath": self.image_path_map[datapoint["image_id"]],
+            "bbox": T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2),
+            "keypoints": keypoints[:, :2],
+            "keypointVisibility": keypoints[:, 2] == 2,
+            "keypointValidity": keypoints[:, 2] > 0,
+            "segmentation": segmentations,
+            "category": datapoint["category_id"]
+        }
+
+class COCO2017PanopticsDataset(data.Dataset):
+    
+    def __init__(
+        self,
+        image_folder_path: str,
+        panoptics_path: str,
+        output_image_shape_WH: tuple,
+        instance_images_output_shape_WH: tuple,
+        max_number_of_instances: int = 10,
+        center_bbox: bool = True):
+        
+        super().__init__()
+        
+        self.panoptics_path = panoptics_path
+        self.image_folder_path = image_folder_path
+        
+        self.output_image_shape = output_image_shape_WH
+        self.instance_images_output_shape = instance_images_output_shape_WH
+        self.max_number_of_instances = max_number_of_instances
+        self.center_bbox = center_bbox
+        
+        with open(os.path.join(panoptics_path, "panoptic_val2017.json"), "r") as f:
+            raw_data = json.load(f)
+        
+        self.categories_map = {cat["id"]: cat["name"] for cat in raw_data["categories"]}
+        
+        self.all_datapoints = self.format_datapoint(raw_data)
+        
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        datapoint = self.all_datapoints[idx]
+        
+        image = read_image(datapoint["originalImagePath"])
+        segmentation_mask = read_image(datapoint["segmentationImagePath"])
+        
+        bboxes = []
+        categories = []
+        instance_images = []
+        instance_mask_images = []
+        for segment in datapoint["segments"]:
+            
+            bbox = segment["segmentBbox"]
+            
+            instance_image = crop(image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+            instance_image = resize(instance_image, self.instance_images_output_shape[::-1])
+            
+            instance_mask_image = crop(segmentation_mask, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+            instance_mask_image = resize(instance_mask_image, self.instance_images_output_shape[::-1])
+            
+            # scale bbox and center if needed
+            bbox = scale_points(bbox, image.shape[::-1][:2], self.output_image_shape).to(dtype=T.int16)
+            if self.center_bbox:
+                bbox = center_bbox(bbox)
+            
+            categories.append(segment["category"])
+            bboxes.append(bbox)
+            instance_images.append(instance_image)
+            instance_mask_images.append(instance_mask_image)
+        
+        # pad to max number of instances
+        num_instances = len(bboxes)
+        bboxes = T.stack([*bboxes[:self.max_number_of_instances], *[T.zeros_like(bboxes[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        categories = T.stack([*categories[:self.max_number_of_instances], *[T.zeros_like(categories[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        instance_images = T.stack([*instance_images[:self.max_number_of_instances], *[T.zeros_like(instance_images[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        instance_mask_images = T.stack([*instance_mask_images[:self.max_number_of_instances], *[T.zeros_like(instance_mask_images[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        
+        # scale image and segmentation mask
+        image = resize(image, self.output_image_shape[::-1])
+        segmentation_mask = resize(segmentation_mask, self.output_image_shape[::-1])
+        
+        return {
+            "image": image,
+            "segmentationMask": segmentation_mask,
+            "bboxes": bboxes,
+            "instanceImages": instance_images,
+            "instanceMaskImages": instance_mask_images,
+            "categories": categories
+        }
+    
+    def format_datapoint(self, raw_data):
+        annotations = []
+        
+        for dp in raw_data["annotations"]:
+            
+            annotations.append({
+                "originalImagePath": os.path.join(self.image_folder_path, dp["file_name"].replace(".png", ".jpg")),
+                "segmentationImagePath": os.path.join(self.panoptics_path, "panoptic_val2017", "panoptic_val2017", dp["file_name"]),
+                "segments": [
+                    {
+                        "category": one_hot(T.tensor(segment["category_id"] - 1), num_classes=max(self.categories_map.keys())),
+                        "segmentBbox": T.tensor(segment["bbox"]).reshape(2, 2),
+                    } for segment in dp["segments_info"]]
+            })
+            
+        return annotations
+
+
+
+
 
 
 
