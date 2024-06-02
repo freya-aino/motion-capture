@@ -434,7 +434,6 @@ class MPIIDataset(data.Dataset):
             "keypointVisibility": visibility,
         }
 
-
 class COCO2017PersonKeypointsDataset(data.Dataset):
     
     def __init__(
@@ -603,12 +602,20 @@ class COCO2017PanopticsDataset(data.Dataset):
         self.max_number_of_instances = max_number_of_instances
         self.center_bbox = center_bbox
         
+        raw_data_annotations = []
+        raw_data_categories = []
         with open(os.path.join(panoptics_path, "panoptic_val2017.json"), "r") as f:
-            raw_data = json.load(f)
+            j = json.load(f)
+            raw_data_annotations.extend(j["annotations"])
+            raw_data_categories.extend(j["categories"])
+        with open(os.path.join(panoptics_path, "panoptic_train2017.json"), "r") as f:
+            j = json.load(f)
+            raw_data_annotations.extend(j["annotations"])
+            raw_data_categories.extend(j["categories"])
         
-        self.categories_map = {cat["id"]: cat["name"] for cat in raw_data["categories"]}
+        # self.categories_map = {cat["id"]: cat["name"] for cat in raw_data_categories}
         
-        self.all_datapoints = self.format_datapoint(raw_data)
+        self.all_datapoints = self.format_datapoint(raw_data_annotations)
         
     def __len__(self):
         return len(self.all_datapoints)
@@ -663,10 +670,10 @@ class COCO2017PanopticsDataset(data.Dataset):
             "categories": categories
         }
     
-    def format_datapoint(self, raw_data):
+    def format_datapoint(self, raw_data_annotations):
         annotations = []
         
-        for dp in raw_data["annotations"]:
+        for dp in raw_data_annotations:
             
             annotations.append({
                 "originalImagePath": os.path.join(self.image_folder_path, dp["file_name"].replace(".png", ".jpg")),
