@@ -1,25 +1,6 @@
 import math
-import quaternions
+import quaternion
 import torch as T
-
-from quaternions import qmath
-
-
-def get_bbox_from_kpts(kpts: T.Tensor):
-    
-    # ! Not Tested
-    # TODO: different types of bboxes
-    
-    assert not kpts.isnan().any(), "all keypoints have to be not nan"
-    
-    # extract min and max (u,v) from keypoints
-    kpts = kpts[..., :2]
-    kpts = kpts[~(kpts.isnan().any(-1))]
-    min_ = kpts.min(0).values
-    max_ = kpts.max(0).values
-    u, v = min_
-    h, w = max_ - min_
-    return T.stack([u, v, h, w])
 
 
 # logic from https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/4f4a192f0fd272102c8852b00b1007dffd292b90/transformer/Models.py#L11
@@ -29,6 +10,23 @@ def positional_embedding(max_sequence_length: int, embedding_dimensions: int) ->
     out[:, 0::2] = T.sin(pos_embedding[:, 0::2])
     out[:, 1::2] = T.cos(pos_embedding[:, 1::2])
     return out
+
+
+# def get_bbox_from_kpts(kpts: T.Tensor):
+    
+#     # ! Not Tested
+#     # TODO: different types of bboxes
+    
+#     assert not kpts.isnan().any(), "all keypoints have to be not nan"
+    
+#     # extract min and max (u,v) from keypoints
+#     kpts = kpts[..., :2]
+#     kpts = kpts[~(kpts.isnan().any(-1))]
+#     min_ = kpts.min(0).values
+#     max_ = kpts.max(0).values
+#     u, v = min_
+#     h, w = max_ - min_
+#     return T.stack([u, v, h, w])
 
 def nanstd(tensor : T.Tensor, dim : int, keepdim : bool = False):
     m = tensor.nanmean(dim, keepdim = True)
@@ -79,23 +77,23 @@ def vector_angle(v1: T.Tensor, v2: T.Tensor):
     assert T.any(v1.abs() != v2.abs()), "vectors cannot be perpendicular nor exactly the same"
     return math.degrees(T.acos(v1.dot(v2) / (v1.norm() * v2.norm())))
 
-def rotate_to_position(input_vector: T.Tensor, output_vector: T.Tensor):
-    angle = vector_angle(input_vector, output_vector)
-    rot_axis = T.cross(input_vector, output_vector)
-    return T.Tensor(qmath.rotate3d(input_vector, angle, rot_axis))
+# def rotate_to_position(input_vector: T.Tensor, output_vector: T.Tensor):
+#     angle = vector_angle(input_vector, output_vector)
+#     rot_axis = T.cross(input_vector, output_vector)
+#     return T.Tensor(qmath.rotate3d(input_vector, angle, rot_axis))
 
-def extract_quat_from_rotation(input_vector: T.Tensor, output_vector: T.Tensor):
-    input_vector = input_vector / input_vector.norm()
-    output_vector = output_vector / output_vector.norm()
-    assert T.any(input_vector.abs() != output_vector.abs()), "vectors cannot be perpendicular nor exactly the same"
+# def extract_quat_from_rotation(input_vector: T.Tensor, output_vector: T.Tensor):
+#     input_vector = input_vector / input_vector.norm()
+#     output_vector = output_vector / output_vector.norm()
+#     assert T.any(input_vector.abs() != output_vector.abs()), "vectors cannot be perpendicular nor exactly the same"
 
-    angle = vector_angle(input_vector, output_vector)
-    rot_axis = T.cross(input_vector, output_vector)
+#     angle = vector_angle(input_vector, output_vector)
+#     rot_axis = T.cross(input_vector, output_vector)
 
-    # p = quaternions.Quaternion(0, *input_vector)
-    axis_i, axis_j, axis_k = rot_axis
-    q = quaternions.Quaternion.from_angle(angle*0.5, (axis_i, axis_j, axis_k), degrees = False)
-    if abs(q) != 1.0:
-        q = q.versor  # Ensures q is a unit vector.
-    return T.tensor(q.components)
+#     # p = quaternions.Quaternion(0, *input_vector)
+#     axis_i, axis_j, axis_k = rot_axis
+#     q = quaternions.Quaternion.from_angle(angle*0.5, (axis_i, axis_j, axis_k), degrees = False)
+#     if abs(q) != 1.0:
+#         q = q.versor  # Ensures q is a unit vector.
+#     return T.tensor(q.components)
 

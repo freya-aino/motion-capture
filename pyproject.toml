@@ -1,22 +1,22 @@
 [tool.poetry]
-name = "homemade-motion-capture"
+name = "motion-capture"
 version = "0.1.0"
-description = ""
+description = "motion capture suite"
 authors = ["kristina-aino <kristina.ai@proton.me>"]
+license = "MIT"
 readme = "README.md"
-packages = [{include = "homemade_motion_capture"}]
+packages = [{include = "motion_capture"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-notebook = "^7.2.0"
-numpy = "^1.26.4"
-pillow = "^10.3.0"
+device-capture-system = {path = "../device-capture-system/dist/device_capture_system-1.1.0.tar.gz"}
+calibrate-camera-system = {path = "../calibrate-camera-system/dist/calibrate_camera_system-1.0.0.tar.gz"}
+numpy-quaternion = "^2023.0.3"
+numpy = "^1.1.0"
 matplotlib = "^3.9.0"
-quaternions-for-python = "^1.1.3"
-opencv-python = "^4.9.0.80"
-pandas = "^2.2.2"
-h5py = "^3.11.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.2"
 
 [build-system]
 requires = ["poetry-core"]

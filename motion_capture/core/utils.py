@@ -13,7 +13,6 @@ import cv2
 import json
 import csv
 import numpy as np
-import pandas as pd
 import torch as T
 
 from pathlib import Path

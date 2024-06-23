@@ -67,6 +67,10 @@ def center_bbox(bbox: T.Tensor) -> T.Tensor:
 
 # ------------------------------------------------------------------------
 
+
+
+
+
 class WIDERFaceDataset(data.Dataset):
     
     def __init__(self,
@@ -688,514 +692,707 @@ class COCO2017PanopticsDataset(data.Dataset):
         return annotations
 
 
-
-
-
-
-
-
-
-# TODO: Finish this, missing load
-class COCODataset(data.Dataset):
-    def __init__(self):
-        super(type(self), self).__init__()
-
-        self.anno_list = []
-
+class COCO2017WholeBodyDataset(data.Dataset):
+    
+    def __init__(
+        self,
+        annotations_folder_path: str,
+        image_folder_path: str,
+        full_image_shape_WH: tuple,
+        person_image_shape_WH: tuple,
+        bodypart_image_shape_WH: tuple,
+        min_person_bbox_size: int = 100, # in pixels for both width and height
+        max_number_of_persons: int = 3,
+        center_bbox: bool = True,
+        load_val_only: bool = False):
+        
+        super().__init__()
+        
+        self.annotations_folder_path = annotations_folder_path
+        self.image_folder_path = image_folder_path
+        
+        self.full_image_shape = full_image_shape_WH
+        self.person_image_shape = person_image_shape_WH
+        self.bodypart_image_shape = bodypart_image_shape_WH
+        
+        self.center_bbox = center_bbox
+        self.max_number_of_persons = max_number_of_persons
+        self.min_person_bbox_size = min_person_bbox_size
+        
+        raw_annotation_datapoints = []
+        raw_image_datapoints = []
+        with open(os.path.join(annotations_folder_path, "coco_wholebody_val_v1.0.json"), "r") as f:
+            j = json.load(f)
+            raw_annotation_datapoints.extend(j["annotations"])
+            raw_image_datapoints.extend(j["images"])
+            
+        if not load_val_only:
+            with open(os.path.join(annotations_folder_path, "coco_wholebody_train_v1.0.json"), "r") as f:
+                j = json.load(f)
+                raw_annotation_datapoints.extend(j["annotations"])
+                raw_image_datapoints.extend(j["images"])
+        
+        # image id to path map
+        self.image_id_path_map = {dp["id"]: os.path.join(self.image_folder_path, dp["file_name"]) for dp in raw_image_datapoints}
+        
+        self.all_datapoints = self.format_datapoints(raw_annotation_datapoints)
+        
     def __len__(self):
-        return len(self.anno_list)
-
+        return len(self.all_datapoints)
+    
     def __getitem__(self, idx):
-
-        coco = self.anno_list[idx]["coco"]
-        halpe = self.anno_list[idx]["halpe"]
-
-        coco_img = cv2.imread(coco["image_path"])
-        halpe_img = cv2.imread(halpe[""])
-
-
-        coco_ordered_kpts_loc = self.ordered_kpts_to_tensor(coco["loc"])
-        coco_ordered_kpts_vis = self.ordered_kpts_to_tensor(coco["vis"])
-        halpe_ordered_kpts_loc = self.ordered_kpts_to_tensor(halpe["loc"])
-        halpe_ordered_kpts_vis = self.ordered_kpts_to_tensor(halpe["vis"])
-
-        coco_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(coco["body_part_kpts"])
-        halpe_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(halpe["body_part_kpts"])
         
-        coco_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(coco["body_part_kpts"], coco["face_valid"], coco["left_hand_valid"], coco["right_hand_valid"], coco["foot_valid"])
-        halpe_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(halpe["body_part_kpts"], True, True, True, True)
-
-        y = {
-            "coco": {
-                "img": coco_img.to(self.device),
-                "bbox": coco["annotation"]["bbox"].to(self.device),
-                
-                "body_parts_kpts_loc": coco_ordered_bp_kpts.to(self.device),
-                "body_part_kpts_vis": coco_ordered_bp_kpts_vis.to(self.device),
-
-                "ordered_kpts_loc": coco_ordered_kpts_loc.to(self.device),
-                "ordered_kpts_vis": coco_ordered_kpts_vis.to(self.device),
-            },
-            "halpe": {
-                "img": halpe["img"].to(self.device),
-                "bbox": halpe["annotation"]["bbox"].to(self.device),
-                
-                "body_parts_kpts_loc": halpe_ordered_bp_kpts.to(self.device),
-                "body_parts_kpts_vis": halpe_ordered_bp_kpts_vis.to(self.device),
-                
-                "ordered_kpts_loc": halpe_ordered_kpts_loc.to(self.device),
-                "ordered_kpts_vis": halpe_ordered_kpts_vis.to(self.device),
-            }
+        datapoint = self.all_datapoints[idx]
+        
+        # load image
+        image = read_image(datapoint["imagePath"])
+        person_bbox = datapoint["personBbox"]
+        face_bbox = datapoint["faceBbox"]
+        left_hand_bbox = datapoint["leftHandBbox"]
+        right_hand_bbox = datapoint["rightHandBbox"]
+        
+        # crop persons
+        person_crop = crop(image, person_bbox[0][1], person_bbox[0][0], person_bbox[1][1], person_bbox[1][0])
+        person_crop = resize(person_crop, self.person_image_shape[::-1])
+        
+        # gather all keypoints
+        keypoints, visibility, validity = self.concat_keypoints(
+            datapoint["bodyKeypoints"], datapoint["faceKeypoints"], datapoint["leftHandKeypoints"], datapoint["rightHandKeypoints"], datapoint["footKeypoints"],
+            datapoint["bodyKeypointVisibility"], datapoint["faceKeypointVisibility"], datapoint["leftHandKeypointVisibility"], datapoint["rightHandKeypointVisibility"], datapoint["footKeypointVisibility"],
+            datapoint["bodyKeypointValidity"], datapoint["faceKeypointValidity"], datapoint["leftHandKeypointValidity"], datapoint["rightHandKeypointValidity"], datapoint["footKeypointValidity"]
+        )
+        
+        # scale keypoints and bounding boxes
+        keypoints = scale_points(keypoints - person_bbox[0], person_bbox[1], self.person_image_shape)
+        
+        # scale bounding boxes
+        face_bbox = scale_points(face_bbox - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], self.person_image_shape)
+        left_hand_bbox = scale_points(left_hand_bbox - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], self.person_image_shape)
+        right_hand_bbox = scale_points(right_hand_bbox - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], self.person_image_shape)
+        
+        if self.center_bbox:
+            face_bbox = center_bbox(face_bbox)
+            left_hand_bbox = center_bbox(left_hand_bbox)
+            right_hand_bbox = center_bbox(right_hand_bbox)
+        
+        return {
+            "personImages": person_crop,
+            "keypoints": keypoints,
+            "keypointsVisibility": visibility,
+            "keyponitsValidity": validity,
+            "faceBbox": face_bbox,
+            "leftHandBbox": left_hand_bbox,
+            "rightHandBbox": right_hand_bbox
         }
-
-        return y
-
-    def ordered_bp_kpts_visibility_to_tensor(self, kpts, face_valid, left_hand_valid, right_hand_valid, foot_valid):
-        return T.cat([
-            [1, 0] if face_valid and T.min(kpts["head"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["left_shoulder"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["right_shoulder"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["left_elbow"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["right_elbow"]) != 0 else [0, 1],
-            [1, 0] if left_hand_valid and T.min(kpts["left_hand"]) != 0 else [0, 1],
-            [1, 0] if right_hand_valid and T.min(kpts["right_hand"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["left_hip"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["right_hip"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["left_knee"]) != 0 else [0, 1],
-            [1, 0] if T.min(kpts["right_knee"]) != 0 else [0, 1],
-            [1, 0] if foot_valid and T.min(kpts["left_foot"]) != 0 else [0, 1],
-            [1, 0] if foot_valid and T.min(kpts["right_foot"]) != 0 else [0, 1],
-        ], dtype=T.float32)
-
-    def ordered_bp_kpts_to_tensor(self, kpts):
-        return T.tensor(np.concatenate([
-            kpts["head"],
-            kpts["left_shoulder"],
-            kpts["right_shoulder"],
-            kpts["left_elbow"],
-            kpts["right_elbow"],
-            kpts["left_hand"],
-            kpts["right_hand"],
-            kpts["left_hip"],
-            kpts["right_hip"],
-            kpts["left_knee"],
-            kpts["right_knee"],
-            kpts["left_foot"],
-            kpts["right_foot"],
-        ]), dtype=T.float32)
-
-    def ordered_kpts_to_tensor(self, kpts):
-        return T.tensor(np.concatenate([
-            kpts["body"]["nose"], # tpn_pose_loc[0]
-            kpts["body"]["left_eye"], # tpn_pose_loc[1]
-            kpts["body"]["right_eye"], # tpn_pose_loc[2]
-            kpts["body"]["left_ear"], # tpn_pose_loc[3]
-            kpts["body"]["right_ear"], # tpn_pose_loc[4]
-            kpts["body"]["left_shoulder"], # tpn_pose_loc[5]
-            kpts["body"]["right_shoulder"], # tpn_pose_loc[6]
-            kpts["body"]["left_elbow"], # tpn_pose_loc[7]
-            kpts["body"]["right_elbow"], # tpn_pose_loc[8]
-            kpts["body"]["left_wrist"], # tpn_pose_loc[9]
-            kpts["body"]["right_wrist"], # tpn_pose_loc[10]
-            kpts["body"]["left_hip"], # tpn_pose_loc[11]
-            kpts["body"]["right_hip"], # tpn_pose_loc[12]
-            kpts["body"]["left_knee"], # tpn_pose_loc[13]
-            kpts["body"]["right_knee"], # tpn_pose_loc[14]
-            kpts["body"]["left_ankle"], # tpn_pose_loc[15]
-            kpts["body"]["right_ankle"], # tpn_pose_loc[16]
-            kpts["body"]["left_heel"], # tpn_pose_loc[17]
-            kpts["body"]["right_heel"], # tpn_pose_loc[18]
-            kpts["body"]["left_big_toe"], # tpn_pose_loc[19]
-            kpts["body"]["right_big_toe"], # tpn_pose_loc[20]
-            kpts["body"]["left_small_toe"], # tpn_pose_loc[21]
-            kpts["body"]["right_small_toe"], # tpn_pose_loc[22]
-            kpts["face"]["jawline"], # tpn_pose_loc[23:40]
-            kpts["face"]["brows"]["right"], # tpn_pose_loc[40:45]
-            kpts["face"]["brows"]["left"], # tpn_pose_loc[45:50]
-            kpts["face"]["nose"]["bridge"], # tpn_pose_loc[50:54]
-            kpts["face"]["nose"]["bottom"], # tpn_pose_loc[54:59]
-            kpts["face"]["eyes"]["left"], # tpn_pose_loc[59:65]
-            kpts["face"]["eyes"]["right"], # tpn_pose_loc[65:71]
-            kpts["face"]["mouth"]["corner"]["left"], # tpn_pose_loc[71]
-            kpts["face"]["mouth"]["corner"]["right"], # tpn_pose_loc[72]
-            kpts["face"]["mouth"]["upper"]["top"], # tpn_pose_loc[73:78]
-            kpts["face"]["mouth"]["upper"]["bottom"], # tpn_pose_loc[78:81]
-            kpts["face"]["mouth"]["lower"]["top"], # tpn_pose_loc[81:84]
-            kpts["face"]["mouth"]["lower"]["bottom"], # tpn_pose_loc[84:89]
-            kpts["left_hand"]["thumb"], # tpn_pose_loc[89:94]
-            kpts["left_hand"]["index"], # tpn_pose_loc[94:98]
-            kpts["left_hand"]["middle"], # tpn_pose_loc[98:102]
-            kpts["left_hand"]["ring"], # tpn_pose_loc[102:106]
-            kpts["left_hand"]["pinky"], # tpn_pose_loc[106:109]
-            kpts["right_hand"]["thumb"], # tpn_pose_loc[109:114]
-            kpts["right_hand"]["index"], # tpn_pose_loc[114:118]
-            kpts["right_hand"]["middle"], # tpn_pose_loc[118:122]
-            kpts["right_hand"]["ring"], # tpn_pose_loc[122:126]
-            kpts["right_hand"]["pinky"], # tpn_pose_loc[126:131]
-        ]), dtype = T.float32)
-
-
-
-
-
-# TODO: refactoring
-class COCOWholeBody(data.Dataset):
-
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
-
-        x = json.load(open(annotation_json_path, "r"))
-        out = {}
-
-        for img in x["images"]:
-            out[img["id"]] = {
-                "width": img["width"],
-                "height": img["height"],
-                "image_path": image_folder_path + img["file_name"],
-                "annotation": []
-            }
-
-        for a in x["annotations"]:
-            if a["image_id"] in out:
-
-                o = {}
-                
-                o["segmentation"] = np.array(a["segmentation"])
-                o["num_kpts"] = a["num_keypoints"]
-                o["id"] = a["id"]
-                o["area"] = a["area"]
-                o["iscrowd"] = a["iscrowd"]
-
-                # TODO: format category
-                o["category_id"] = a["category_id"]
-
-                o["bbox"] = a["bbox"]
-                o["face_bbox"] = None if all([fb == 0. for fb in a["face_box"]]) else a["face_box"]
-                o["left_hand_bbox"] = None if all([fb == 0. for fb in a["lefthand_box"]]) else a["lefthand_box"]
-                o["right_hand_bbox"] = None if all([fb == 0. for fb in a["righthand_box"]]) else a["righthand_box"]
-
-                o["face_valid"] = a["face_valid"]
-                o["left_hand_valid"] = a["lefthand_valid"]
-                o["right_hand_valid"] = a["righthand_valid"]
-                o["foot_valid"] = a["foot_valid"]
-
-                kpts = [*a["keypoints"], *a["foot_kpts"], *a["face_kpts"], *a["lefthand_kpts"], *a["righthand_kpts"]]
-                kpts = np.array(kpts).reshape((133, 3))
-
-                o["keypoints"] = {
-                    "body": {
-                        "nose": kpts[0],
-                        "left_eye": kpts[1],
-                        "right_eye": kpts[2],
-                        "left_ear": kpts[3],
-                        "right_ear": kpts[4],
-                        "left_shoulder": kpts[5],
-                        "right_shoulder": kpts[6],
-                        "left_elbow": kpts[7],
-                        "right_elbow": kpts[8],
-                        "left_wrist": kpts[9],
-                        "right_wrist": kpts[10],
-                        "left_hip": kpts[11],
-                        "right_hip": kpts[12],
-                        "left_knee": kpts[13],
-                        "right_knee": kpts[14],
-                        "left_ankle": kpts[15],
-                        "right_ankle": kpts[16],
-                        "left_heel": kpts[19],
-                        "right_heel": kpts[22],
-                        "left_big_toe": kpts[17],
-                        "right_big_toe": kpts[20],
-                        "left_small_toe": kpts[18],
-                        "right_small_toe": kpts[21],
-                    },
-                    "face": {
-                        "jawline": kpts[23:40],
-                        "brows": {
-                            "right": kpts[40:45],
-                            "left": kpts[45:50],
-                        },
-                        "nose": {
-                            "bridge": kpts[50:54],
-                            "bottom": kpts[54:59],
-                        },
-                        "eyes": {
-                            "right": kpts[59:65],
-                            "left": kpts[65:71],
-                        },
-                        "mouth": {
-                            "corner": {
-                                "right": kpts[71],
-                                "left": kpts[77],
-                            },
-                            "upper": {
-                                "top": kpts[72:77],
-                                "bottom": kpts[88:91],
-                            },
-                            "lower": {
-                                "top": kpts[84:87],
-                                "bottom": kpts[78:83],
-                            }
-                        }
-                    },
-                    "left_hand": { 
-                        "thumb": kpts[91:96],
-                        "index": kpts[96:100],
-                        "middle": kpts[100:104],
-                        "ring": kpts[104:108],
-                        "pinky": kpts[108:112],
-                    },
-                    "right_hand": {
-                        "thumb": kpts[112:117],
-                        "index": kpts[117:121],
-                        "middle": kpts[121:125],
-                        "ring": kpts[125:129],
-                        "pinky": kpts[129:133],
-                    }
-                }
-
-                out[a["image_id"]]["annotation"].append(o)
-
-        out_ = {}
-        for k in out:
-            if len(out[k]["annotation"]) == 1:
-                out_[k] = deepcopy(out[k])
-                out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
-
-                # BBOX
-                x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
-                x_max = x_min + w
-                y_max = y_min + h
-                out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
-
-                out_[k]["body_part_kpts"] = {
-                    "head": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["nose"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
-                    ]), axis = 0),
-                    "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
-                    "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
-                    "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
-                    "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
-                    "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
-                    "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
-                    "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
-                    "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
-                    "left_foot": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
-                    ]), axis = 0),
-                    "right_foot": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
-                    ]), axis = 0),
-                    "left_hand": T.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
-                        out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
-                        out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
-                        out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
-                        out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
-                        out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
-                    ]), axis = 0),
-                    "right_hand": T.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
-                        out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
-                        out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
-                        out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
-                        out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
-                        out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
-                    ]), axis = 0),
-                }
-
-        del out
-        return out_
     
-# TODO: refactoring
-class HalpeFullBody(data.Dataset):
-
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
+    # TODO: create a function to formal keypoints back to readable
+    def concat_keypoints(
+        self,
+        body_keypoints, face_keypoints, left_hand_keypoints, right_hand_keypoints, foot_keypoints,
+        body_visibility, face_visibility, left_hand_visibility, right_hand_visibility, foot_visibility,
+        body_validity, face_validity, left_hand_validity, right_hand_validity, foot_validity):
+        return (
+            T.cat([
+                body_keypoints,
+                face_keypoints,
+                left_hand_keypoints,
+                right_hand_keypoints,
+                foot_keypoints
+            ]),
+            T.cat([
+                body_visibility,
+                face_visibility,
+                left_hand_visibility,
+                right_hand_visibility,
+                foot_visibility
+            ]),
+            T.cat([
+                body_validity,
+                face_validity,
+                left_hand_validity,
+                right_hand_validity,
+                foot_validity
+            ])
+        )
+    
+    def format_datapoint(self, datapoint):
         
-        x = json.load(open(anno_path, "r"))
-        out = {}
+        # drop if bbox not large enough
+        if datapoint["bbox"][2] < self.min_person_bbox_size or datapoint["bbox"][3] < self.min_person_bbox_size:
+            return None
+        
+        keypoints = T.tensor(datapoint["keypoints"], dtype=T.int16).reshape(-1, 3)
+        face_kpts = T.tensor(datapoint["face_kpts"], dtype=T.int16).reshape(-1, 3)
+        lefthand_kpts = T.tensor(datapoint["lefthand_kpts"], dtype=T.int16).reshape(-1, 3)
+        righthand_kpts = T.tensor(datapoint["righthand_kpts"], dtype=T.int16).reshape(-1, 3)
+        foot_kpts = T.tensor(datapoint["foot_kpts"], dtype=T.int16).reshape(-1, 3)
+        person_bbox = T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2)
+        face_bbox = T.tensor(datapoint["face_box"], dtype=T.int16).reshape(2, 2)
+        left_hand_bmbox = T.tensor(datapoint["lefthand_box"], dtype=T.int16).reshape(2, 2)
+        right_hand_bbox = T.tensor(datapoint["righthand_box"], dtype=T.int16).reshape(2, 2)
+        face_valid = T.tensor(datapoint["face_valid"], dtype=T.bool)
+        lefthand_valid = T.tensor(datapoint["lefthand_valid"], dtype=T.bool)
+        righthand_valid = T.tensor(datapoint["righthand_valid"], dtype=T.bool)
+        
+        keypoint_visibility = keypoints[:, 2] == 2
+        face_kpts_visibility = face_kpts[:, 2] == 2
+        lefthand_kpts_visibility = lefthand_kpts[:, 2] == 2
+        righthand_kpts_visibility = righthand_kpts[:, 2] == 2
+        foot_kpts_visibility = foot_kpts[:, 2] == 2
+        
+        keypoints_validity = keypoints[:, 2] == 1
+        face_kpts_validity = face_kpts[:, 2] == 1
+        lefthand_kpts_validity = lefthand_kpts[:, 2] == 1
+        righthand_kpts_validity = righthand_kpts[:, 2] == 1
+        foot_kpts_validity = foot_kpts[:, 2] == 1
+        
+        keypoints = keypoints[:, :2]
+        face_kpts = face_kpts[:, :2]
+        lefthand_kpts = lefthand_kpts[:, :2]
+        righthand_kpts = righthand_kpts[:, :2]
+        foot_kpts = foot_kpts[:, :2]
+        
+        return {
+            "imagePath": self.image_id_path_map[datapoint["image_id"]],
+            "personBbox": person_bbox,
+            "faceBbox": face_bbox,
+            "leftHandBbox": left_hand_bmbox,
+            "rightHandBbox": right_hand_bbox,
+            "bodyKeypoints": keypoints,
+            "bodyKeypointVisibility": keypoint_visibility,
+            "bodyKeypointValidity": keypoints_validity,
+            "faceKeypoints": face_kpts,
+            "faceKeypointVisibility": face_kpts_visibility,
+            "faceKeypointValidity": face_kpts_validity,
+            "leftHandKeypoints": lefthand_kpts,
+            "leftHandKeypointVisibility": lefthand_kpts_visibility,
+            "leftHandKeypointValidity": lefthand_kpts_validity,
+            "rightHandKeypoints": righthand_kpts,
+            "rightHandKeypointVisibility": righthand_kpts_visibility,
+            "rightHandKeypointValidity": righthand_kpts_validity,
+            "footKeypoints": foot_kpts,
+            "footKeypointVisibility": foot_kpts_visibility,
+            "footKeypointValidity": foot_kpts_validity,
+            "faceValidity": face_valid,
+            "leftHandValidity": lefthand_valid,
+            "rightHandValidity": righthand_valid,
+        }
+    
+    def format_datapoints(self, annotation_datapoints):
+        
+        # format datapoints
+        formatted_datapoints = []
+        for dp in annotation_datapoints:
+            formatted_dp = self.format_datapoint(dp)
+            if formatted_dp is None:
+                continue
+            formatted_datapoints.append(formatted_dp)
+        
+        return formatted_datapoints
 
-        for img in x["images"]:
-            out[img["id"]] = {
-                "width": img["width"],
-                "height": img["height"],
-                "image_path": img_folder + img["file_name"],
-                "annotation": []
-            }
 
-        for a in x["annotations"]:
-            if a["image_id"] in out:
 
-                o = {}
+
+# class COCODataset(data.Dataset):
+#     def __init__(self):
+#         super(type(self), self).__init__()
+
+#         self.anno_list = []
+
+#     def __len__(self):
+#         return len(self.anno_list)
+
+#     def __getitem__(self, idx):
+
+#         coco = self.anno_list[idx]["coco"]
+#         halpe = self.anno_list[idx]["halpe"]
+
+#         coco_img = cv2.imread(coco["image_path"])
+#         halpe_img = cv2.imread(halpe[""])
+
+
+#         coco_ordered_kpts_loc = self.ordered_kpts_to_tensor(coco["loc"])
+#         coco_ordered_kpts_vis = self.ordered_kpts_to_tensor(coco["vis"])
+#         halpe_ordered_kpts_loc = self.ordered_kpts_to_tensor(halpe["loc"])
+#         halpe_ordered_kpts_vis = self.ordered_kpts_to_tensor(halpe["vis"])
+
+#         coco_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(coco["body_part_kpts"])
+#         halpe_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(halpe["body_part_kpts"])
+        
+#         coco_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(coco["body_part_kpts"], coco["face_valid"], coco["left_hand_valid"], coco["right_hand_valid"], coco["foot_valid"])
+#         halpe_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(halpe["body_part_kpts"], True, True, True, True)
+
+#         y = {
+#             "coco": {
+#                 "img": coco_img.to(self.device),
+#                 "bbox": coco["annotation"]["bbox"].to(self.device),
                 
-                o["bbox"] = a["bbox"]
+#                 "body_parts_kpts_loc": coco_ordered_bp_kpts.to(self.device),
+#                 "body_part_kpts_vis": coco_ordered_bp_kpts_vis.to(self.device),
 
-                kpts = a["keypoints"]
-                kpts = np.array(kpts).reshape((136, 3))
+#                 "ordered_kpts_loc": coco_ordered_kpts_loc.to(self.device),
+#                 "ordered_kpts_vis": coco_ordered_kpts_vis.to(self.device),
+#             },
+#             "halpe": {
+#                 "img": halpe["img"].to(self.device),
+#                 "bbox": halpe["annotation"]["bbox"].to(self.device),
+                
+#                 "body_parts_kpts_loc": halpe_ordered_bp_kpts.to(self.device),
+#                 "body_parts_kpts_vis": halpe_ordered_bp_kpts_vis.to(self.device),
+                
+#                 "ordered_kpts_loc": halpe_ordered_kpts_loc.to(self.device),
+#                 "ordered_kpts_vis": halpe_ordered_kpts_vis.to(self.device),
+#             }
+#         }
 
-                o["keypoints"] = {
-                    "body": {
-                        "nose": kpts[0],
-                        "left_eye": kpts[1],
-                        "right_eye": kpts[2],
-                        "left_ear": kpts[3],
-                        "right_ear": kpts[4],
-                        "left_shoulder": kpts[5],
-                        "right_shoulder": kpts[6],
-                        "left_elbow": kpts[7],
-                        "right_elbow": kpts[8],
-                        "left_wrist": kpts[9],
-                        "right_wrist": kpts[10],
-                        "left_hip": kpts[11],
-                        "right_hip": kpts[12],
-                        "left_knee": kpts[13],
-                        "right_knee": kpts[14],
-                        "left_ankle": kpts[15],
-                        "right_ankle": kpts[16],
-                        # "head": kpts[17],
-                        # "neck": kpts[18],
-                        # "hip": kpts[19],
-                        "left_big_toe": kpts[20],
-                        "right_big_toe": kpts[21],
-                        "left_small_toe": kpts[22],
-                        "right_small_toe": kpts[23],
-                        "left_heel": kpts[24],
-                        "right_heel": kpts[25],
-                    },
-                    "face": { # 26-93
-                        "jawline": kpts[26:43],
-                        "brows": {
-                            "right": kpts[43:48],
-                            "left": kpts[48:53],
-                        },
-                        "nose": {
-                            "bridge": kpts[53:57],
-                            "bottom": kpts[57:62],
-                        },
-                        "eyes": {
-                            "right": kpts[62:68],
-                            "left": kpts[68:74],
-                        },
-                        "mouth": {
-                            "corner": {
-                                "right": kpts[74],
-                                "left": kpts[80],
-                            },
-                            "upper": {
-                                "top": kpts[75:80],
-                                "bottom": kpts[87:90],
-                            },
-                            "lower": {
-                                "top": kpts[91:94],
-                                "bottom": kpts[81:86],
-                            }
-                        }
-                    },
-                    "left_hand": { # 94-114
-                        "thumb": kpts[94:99],
-                        "index": kpts[99:94+9],
-                        "middle": kpts[94+9:94+13],
-                        "ring": kpts[94+13:94+17],
-                        "pinky": kpts[94+17:94+21]
-                    },
-                    "right_hand": { # 115-136
-                        "thumb": kpts[115:120],
-                        "index": kpts[120:115+9],
-                        "middle": kpts[115+9:115+13],
-                        "ring": kpts[115+13:115+17],
-                        "pinky": kpts[115+17:115+21],
-                    }
-                }
+#         return y
+
+#     def ordered_bp_kpts_visibility_to_tensor(self, kpts, face_valid, left_hand_valid, right_hand_valid, foot_valid):
+#         return T.cat([
+#             [1, 0] if face_valid and T.min(kpts["head"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["left_shoulder"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["right_shoulder"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["left_elbow"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["right_elbow"]) != 0 else [0, 1],
+#             [1, 0] if left_hand_valid and T.min(kpts["left_hand"]) != 0 else [0, 1],
+#             [1, 0] if right_hand_valid and T.min(kpts["right_hand"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["left_hip"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["right_hip"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["left_knee"]) != 0 else [0, 1],
+#             [1, 0] if T.min(kpts["right_knee"]) != 0 else [0, 1],
+#             [1, 0] if foot_valid and T.min(kpts["left_foot"]) != 0 else [0, 1],
+#             [1, 0] if foot_valid and T.min(kpts["right_foot"]) != 0 else [0, 1],
+#         ], dtype=T.float32)
+
+#     def ordered_bp_kpts_to_tensor(self, kpts):
+#         return T.tensor(np.concatenate([
+#             kpts["head"],
+#             kpts["left_shoulder"],
+#             kpts["right_shoulder"],
+#             kpts["left_elbow"],
+#             kpts["right_elbow"],
+#             kpts["left_hand"],
+#             kpts["right_hand"],
+#             kpts["left_hip"],
+#             kpts["right_hip"],
+#             kpts["left_knee"],
+#             kpts["right_knee"],
+#             kpts["left_foot"],
+#             kpts["right_foot"],
+#         ]), dtype=T.float32)
+
+#     def ordered_kpts_to_tensor(self, kpts):
+#         return T.tensor(np.concatenate([
+#             kpts["body"]["nose"], # tpn_pose_loc[0]
+#             kpts["body"]["left_eye"], # tpn_pose_loc[1]
+#             kpts["body"]["right_eye"], # tpn_pose_loc[2]
+#             kpts["body"]["left_ear"], # tpn_pose_loc[3]
+#             kpts["body"]["right_ear"], # tpn_pose_loc[4]
+#             kpts["body"]["left_shoulder"], # tpn_pose_loc[5]
+#             kpts["body"]["right_shoulder"], # tpn_pose_loc[6]
+#             kpts["body"]["left_elbow"], # tpn_pose_loc[7]
+#             kpts["body"]["right_elbow"], # tpn_pose_loc[8]
+#             kpts["body"]["left_wrist"], # tpn_pose_loc[9]
+#             kpts["body"]["right_wrist"], # tpn_pose_loc[10]
+#             kpts["body"]["left_hip"], # tpn_pose_loc[11]
+#             kpts["body"]["right_hip"], # tpn_pose_loc[12]
+#             kpts["body"]["left_knee"], # tpn_pose_loc[13]
+#             kpts["body"]["right_knee"], # tpn_pose_loc[14]
+#             kpts["body"]["left_ankle"], # tpn_pose_loc[15]
+#             kpts["body"]["right_ankle"], # tpn_pose_loc[16]
+#             kpts["body"]["left_heel"], # tpn_pose_loc[17]
+#             kpts["body"]["right_heel"], # tpn_pose_loc[18]
+#             kpts["body"]["left_big_toe"], # tpn_pose_loc[19]
+#             kpts["body"]["right_big_toe"], # tpn_pose_loc[20]
+#             kpts["body"]["left_small_toe"], # tpn_pose_loc[21]
+#             kpts["body"]["right_small_toe"], # tpn_pose_loc[22]
+#             kpts["face"]["jawline"], # tpn_pose_loc[23:40]
+#             kpts["face"]["brows"]["right"], # tpn_pose_loc[40:45]
+#             kpts["face"]["brows"]["left"], # tpn_pose_loc[45:50]
+#             kpts["face"]["nose"]["bridge"], # tpn_pose_loc[50:54]
+#             kpts["face"]["nose"]["bottom"], # tpn_pose_loc[54:59]
+#             kpts["face"]["eyes"]["left"], # tpn_pose_loc[59:65]
+#             kpts["face"]["eyes"]["right"], # tpn_pose_loc[65:71]
+#             kpts["face"]["mouth"]["corner"]["left"], # tpn_pose_loc[71]
+#             kpts["face"]["mouth"]["corner"]["right"], # tpn_pose_loc[72]
+#             kpts["face"]["mouth"]["upper"]["top"], # tpn_pose_loc[73:78]
+#             kpts["face"]["mouth"]["upper"]["bottom"], # tpn_pose_loc[78:81]
+#             kpts["face"]["mouth"]["lower"]["top"], # tpn_pose_loc[81:84]
+#             kpts["face"]["mouth"]["lower"]["bottom"], # tpn_pose_loc[84:89]
+#             kpts["left_hand"]["thumb"], # tpn_pose_loc[89:94]
+#             kpts["left_hand"]["index"], # tpn_pose_loc[94:98]
+#             kpts["left_hand"]["middle"], # tpn_pose_loc[98:102]
+#             kpts["left_hand"]["ring"], # tpn_pose_loc[102:106]
+#             kpts["left_hand"]["pinky"], # tpn_pose_loc[106:109]
+#             kpts["right_hand"]["thumb"], # tpn_pose_loc[109:114]
+#             kpts["right_hand"]["index"], # tpn_pose_loc[114:118]
+#             kpts["right_hand"]["middle"], # tpn_pose_loc[118:122]
+#             kpts["right_hand"]["ring"], # tpn_pose_loc[122:126]
+#             kpts["right_hand"]["pinky"], # tpn_pose_loc[126:131]
+#         ]), dtype = T.float32)
 
 
 
-                out[a["image_id"]]["annotation"].append(o)
 
 
-        out_ = {}
-        for k in out:
-            if len(out[k]["annotation"]) == 1:
-                out_[k] = deepcopy(out[k])
-                out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
+# # TODO: refactoring
+# class COCOWholeBody(data.Dataset):
 
-                # BBOX
-                x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
-                x_max = x_min + w
-                y_max = y_min + h
-                out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
+#     def __init__(self, annotation_json_path: str, image_folder_path: str):
+#         super(type(self), self).__init__()
 
-                out_[k]["body_part_kpts"] = {
-                    "head": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["nose"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
-                    ]), axis = 0),
-                    "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
-                    "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
-                    "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
-                    "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
-                    "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
-                    "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
-                    "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
-                    "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
-                    "left_foot": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
-                        out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
-                    ]), axis = 0),
-                    "right_foot": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
-                        out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
-                    ]), axis = 0),
-                    "left_hand": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
-                        *out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
-                        *out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
-                        *out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
-                        *out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
-                        *out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
-                    ]), axis = 0),
-                    "right_hand": np.mean(np.stack([
-                        out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
-                        *out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
-                        *out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
-                        *out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
-                        *out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
-                        *out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
-                    ]), axis = 0),
-                }
+#         x = json.load(open(annotation_json_path, "r"))
+#         out = {}
 
-        del out
-        return out_
+#         for img in x["images"]:
+#             out[img["id"]] = {
+#                 "width": img["width"],
+#                 "height": img["height"],
+#                 "image_path": image_folder_path + img["file_name"],
+#                 "annotation": []
+#             }
 
-# TODO
-class DexYCB(data.Dataset):
+#         for a in x["annotations"]:
+#             if a["image_id"] in out:
+
+#                 o = {}
+                
+#                 o["segmentation"] = np.array(a["segmentation"])
+#                 o["num_kpts"] = a["num_keypoints"]
+#                 o["id"] = a["id"]
+#                 o["area"] = a["area"]
+#                 o["iscrowd"] = a["iscrowd"]
+
+#                 # TODO: format category
+#                 o["category_id"] = a["category_id"]
+
+#                 o["bbox"] = a["bbox"]
+#                 o["face_bbox"] = None if all([fb == 0. for fb in a["face_box"]]) else a["face_box"]
+#                 o["left_hand_bbox"] = None if all([fb == 0. for fb in a["lefthand_box"]]) else a["lefthand_box"]
+#                 o["right_hand_bbox"] = None if all([fb == 0. for fb in a["righthand_box"]]) else a["righthand_box"]
+
+#                 o["face_valid"] = a["face_valid"]
+#                 o["left_hand_valid"] = a["lefthand_valid"]
+#                 o["right_hand_valid"] = a["righthand_valid"]
+#                 o["foot_valid"] = a["foot_valid"]
+
+#                 kpts = [*a["keypoints"], *a["foot_kpts"], *a["face_kpts"], *a["lefthand_kpts"], *a["righthand_kpts"]]
+#                 kpts = np.array(kpts).reshape((133, 3))
+
+#                 o["keypoints"] = {
+#                     "body": {
+#                         "nose": kpts[0],
+#                         "left_eye": kpts[1],
+#                         "right_eye": kpts[2],
+#                         "left_ear": kpts[3],
+#                         "right_ear": kpts[4],
+#                         "left_shoulder": kpts[5],
+#                         "right_shoulder": kpts[6],
+#                         "left_elbow": kpts[7],
+#                         "right_elbow": kpts[8],
+#                         "left_wrist": kpts[9],
+#                         "right_wrist": kpts[10],
+#                         "left_hip": kpts[11],
+#                         "right_hip": kpts[12],
+#                         "left_knee": kpts[13],
+#                         "right_knee": kpts[14],
+#                         "left_ankle": kpts[15],
+#                         "right_ankle": kpts[16],
+#                         "left_heel": kpts[19],
+#                         "right_heel": kpts[22],
+#                         "left_big_toe": kpts[17],
+#                         "right_big_toe": kpts[20],
+#                         "left_small_toe": kpts[18],
+#                         "right_small_toe": kpts[21],
+#                     },
+#                     "face": {
+#                         "jawline": kpts[23:40],
+#                         "brows": {
+#                             "right": kpts[40:45],
+#                             "left": kpts[45:50],
+#                         },
+#                         "nose": {
+#                             "bridge": kpts[50:54],
+#                             "bottom": kpts[54:59],
+#                         },
+#                         "eyes": {
+#                             "right": kpts[59:65],
+#                             "left": kpts[65:71],
+#                         },
+#                         "mouth": {
+#                             "corner": {
+#                                 "right": kpts[71],
+#                                 "left": kpts[77],
+#                             },
+#                             "upper": {
+#                                 "top": kpts[72:77],
+#                                 "bottom": kpts[88:91],
+#                             },
+#                             "lower": {
+#                                 "top": kpts[84:87],
+#                                 "bottom": kpts[78:83],
+#                             }
+#                         }
+#                     },
+#                     "left_hand": { 
+#                         "thumb": kpts[91:96],
+#                         "index": kpts[96:100],
+#                         "middle": kpts[100:104],
+#                         "ring": kpts[104:108],
+#                         "pinky": kpts[108:112],
+#                     },
+#                     "right_hand": {
+#                         "thumb": kpts[112:117],
+#                         "index": kpts[117:121],
+#                         "middle": kpts[121:125],
+#                         "ring": kpts[125:129],
+#                         "pinky": kpts[129:133],
+#                     }
+#                 }
+
+#                 out[a["image_id"]]["annotation"].append(o)
+
+#         out_ = {}
+#         for k in out:
+#             if len(out[k]["annotation"]) == 1:
+#                 out_[k] = deepcopy(out[k])
+#                 out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
+
+#                 # BBOX
+#                 x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
+#                 x_max = x_min + w
+#                 y_max = y_min + h
+#                 out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
+
+#                 out_[k]["body_part_kpts"] = {
+#                     "head": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["nose"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
+#                     ]), axis = 0),
+#                     "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
+#                     "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
+#                     "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
+#                     "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
+#                     "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
+#                     "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
+#                     "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
+#                     "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
+#                     "left_foot": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
+#                     ]), axis = 0),
+#                     "right_foot": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
+#                     ]), axis = 0),
+#                     "left_hand": T.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
+#                         out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
+#                         out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
+#                         out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
+#                         out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
+#                         out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
+#                     ]), axis = 0),
+#                     "right_hand": T.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
+#                         out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
+#                         out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
+#                         out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
+#                         out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
+#                         out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
+#                     ]), axis = 0),
+#                 }
+
+#         del out
+#         return out_
     
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
+# # TODO: refactoring
+# class HalpeFullBody(data.Dataset):
 
-# TODO
-class FreiHAND(data.Dataset):
+#     def __init__(self, annotation_json_path: str, image_folder_path: str):
+#         super(type(self), self).__init__()
+        
+#         x = json.load(open(anno_path, "r"))
+#         out = {}
+
+#         for img in x["images"]:
+#             out[img["id"]] = {
+#                 "width": img["width"],
+#                 "height": img["height"],
+#                 "image_path": img_folder + img["file_name"],
+#                 "annotation": []
+#             }
+
+#         for a in x["annotations"]:
+#             if a["image_id"] in out:
+
+#                 o = {}
+                
+#                 o["bbox"] = a["bbox"]
+
+#                 kpts = a["keypoints"]
+#                 kpts = np.array(kpts).reshape((136, 3))
+
+#                 o["keypoints"] = {
+#                     "body": {
+#                         "nose": kpts[0],
+#                         "left_eye": kpts[1],
+#                         "right_eye": kpts[2],
+#                         "left_ear": kpts[3],
+#                         "right_ear": kpts[4],
+#                         "left_shoulder": kpts[5],
+#                         "right_shoulder": kpts[6],
+#                         "left_elbow": kpts[7],
+#                         "right_elbow": kpts[8],
+#                         "left_wrist": kpts[9],
+#                         "right_wrist": kpts[10],
+#                         "left_hip": kpts[11],
+#                         "right_hip": kpts[12],
+#                         "left_knee": kpts[13],
+#                         "right_knee": kpts[14],
+#                         "left_ankle": kpts[15],
+#                         "right_ankle": kpts[16],
+#                         # "head": kpts[17],
+#                         # "neck": kpts[18],
+#                         # "hip": kpts[19],
+#                         "left_big_toe": kpts[20],
+#                         "right_big_toe": kpts[21],
+#                         "left_small_toe": kpts[22],
+#                         "right_small_toe": kpts[23],
+#                         "left_heel": kpts[24],
+#                         "right_heel": kpts[25],
+#                     },
+#                     "face": { # 26-93
+#                         "jawline": kpts[26:43],
+#                         "brows": {
+#                             "right": kpts[43:48],
+#                             "left": kpts[48:53],
+#                         },
+#                         "nose": {
+#                             "bridge": kpts[53:57],
+#                             "bottom": kpts[57:62],
+#                         },
+#                         "eyes": {
+#                             "right": kpts[62:68],
+#                             "left": kpts[68:74],
+#                         },
+#                         "mouth": {
+#                             "corner": {
+#                                 "right": kpts[74],
+#                                 "left": kpts[80],
+#                             },
+#                             "upper": {
+#                                 "top": kpts[75:80],
+#                                 "bottom": kpts[87:90],
+#                             },
+#                             "lower": {
+#                                 "top": kpts[91:94],
+#                                 "bottom": kpts[81:86],
+#                             }
+#                         }
+#                     },
+#                     "left_hand": { # 94-114
+#                         "thumb": kpts[94:99],
+#                         "index": kpts[99:94+9],
+#                         "middle": kpts[94+9:94+13],
+#                         "ring": kpts[94+13:94+17],
+#                         "pinky": kpts[94+17:94+21]
+#                     },
+#                     "right_hand": { # 115-136
+#                         "thumb": kpts[115:120],
+#                         "index": kpts[120:115+9],
+#                         "middle": kpts[115+9:115+13],
+#                         "ring": kpts[115+13:115+17],
+#                         "pinky": kpts[115+17:115+21],
+#                     }
+#                 }
+
+
+
+#                 out[a["image_id"]]["annotation"].append(o)
+
+
+#         out_ = {}
+#         for k in out:
+#             if len(out[k]["annotation"]) == 1:
+#                 out_[k] = deepcopy(out[k])
+#                 out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
+
+#                 # BBOX
+#                 x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
+#                 x_max = x_min + w
+#                 y_max = y_min + h
+#                 out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
+
+#                 out_[k]["body_part_kpts"] = {
+#                     "head": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["nose"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
+#                     ]), axis = 0),
+#                     "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
+#                     "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
+#                     "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
+#                     "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
+#                     "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
+#                     "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
+#                     "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
+#                     "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
+#                     "left_foot": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
+#                     ]), axis = 0),
+#                     "right_foot": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
+#                     ]), axis = 0),
+#                     "left_hand": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
+#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
+#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
+#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
+#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
+#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
+#                     ]), axis = 0),
+#                     "right_hand": np.mean(np.stack([
+#                         out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
+#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
+#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
+#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
+#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
+#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
+#                     ]), axis = 0),
+#                 }
+
+#         del out
+#         return out_
+
+# # TODO
+# class DexYCB(data.Dataset):
     
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
+#     def __init__(self, annotation_json_path: str, image_folder_path: str):
+#         super(type(self), self).__init__()
 
-# TODO
-class ICVL(data.Dataset):
-    def __init__(self, annotation_json_path: str, image_folder_path: str):
-        super(type(self), self).__init__()
+# # TODO
+# class FreiHAND(data.Dataset):
+    
+#     def __init__(self, annotation_json_path: str, image_folder_path: str):
+#         super(type(self), self).__init__()
+
+# # TODO
+# class ICVL(data.Dataset):
+#     def __init__(self, annotation_json_path: str, image_folder_path: str):
+#         super(type(self), self).__init__()

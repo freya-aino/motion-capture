@@ -118,51 +118,49 @@ class PyramidTransformerNeck(nn.Module):
         
         pass
 
-
 class UpsampleCrossAttentionrNeck(nn.Module):
     def __init__(
         self, 
         output_size,
-        depth_multiple = 0.33,
-        width = 1024,
-        width_multiple = 0.25,
-        original_positional_embedding_size: int = 256):
+        latent_size = 1024,
+        depth_multiple = 1,
+        positional_embedding_size: int = 256):
         super(type(self), self).__init__()
         
-        self.latent_sizes = {
-            "codec": int(width * width_multiple), # both for encoder and decoder input/output sizes
-            "latent": int(width / 2 * width_multiple), # for the latent space of the encoder/decoder
-            "latent_2": int(width / 4 * width_multiple), # latent space
-        }
-        scaled_positional_embedding_size = int(original_positional_embedding_size * width_multiple)
+        assert depth_multiple >= 1, "depth_multiple must be at least 1"
+        assert latent_size / 2 > 1, "latent_size must be at least be divisible by 2"
+        
+        codec_latent_size = latent_size
+        latent_size_mid = int(latent_size / 2)
         
         self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
         
         self.reverse1 = nn.Sequential(
-            C2f(self.latent_sizes["codec"] + self.latent_sizes["latent"], self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False)
+            C2f(codec_latent_size + latent_size_mid, latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False)
         )
         self.reverse2 = nn.Sequential(
-            C2f(self.latent_sizes["latent"] + self.latent_sizes["latent_2"], self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False),
-            ConvBlock(self.latent_sizes["latent"], self.latent_sizes["latent"], kernel_size=3, stride=2, padding=1)
+            C2f(latent_size_mid + (latent_size_mid // 2), latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(latent_size_mid, latent_size_mid, kernel_size=3, stride=2, padding=1)
         )
         self.reverse3 = nn.Sequential(
-            C2f(self.latent_sizes["latent"] * 2, self.latent_sizes["latent"], kernel_size=1, n=int(3*depth_multiple), shortcut=False),
-            ConvBlock(self.latent_sizes["latent"], self.latent_sizes["codec"], kernel_size=3, stride=2, padding=1)
+            C2f(latent_size_mid * 2, latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(latent_size_mid, codec_latent_size, kernel_size=3, stride=2, padding=1)
         )
         
-        self.Q_encoder = ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0)
-        self.K_encoder = ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0)
-        self.V_encoder = nn.Sequential(
-            # ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0),
-            # C2f(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, n=int(3*depth_multiple), shortcut=True),
-            # ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, stride=1, padding=0),
-            # C2f(self.latent_sizes["codec"], self.latent_sizes["codec"], kernel_size=1, n=int(3*depth_multiple), shortcut=True),
-            ConvBlock(self.latent_sizes["codec"], self.latent_sizes["codec"] + scaled_positional_embedding_size, kernel_size=1, stride=1, padding=0)
-        )
+        self.Q_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
+        self.K_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
+        self.V_encoder = ConvBlock(codec_latent_size, codec_latent_size + positional_embedding_size, kernel_size=1, stride=1, padding=0)
+        # nn.Sequential(
+        #     ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0),
+        #     C2f(codec_latent_size, codec_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=True),
+        #     ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0),
+        #     C2f(codec_latent_size, codec_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=True),
+        #     ConvBlock(codec_latent_size, codec_latent_size + positional_embedding_size, kernel_size=1, stride=1, padding=0)
+        # )
         
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, scaled_positional_embedding_size), requires_grad=False)
+        self.positional_embedding = nn.Parameter(positional_embedding(20*20, positional_embedding_size), requires_grad=False)
         
-        self.output_1d_conv = nn.Conv1d(self.latent_sizes["codec"] + scaled_positional_embedding_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
+        self.output_1d_conv = nn.Conv1d(codec_latent_size + positional_embedding_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
         
     def forward(self, x1: T.Tensor, x2: T.Tensor, x3: T.Tensor) -> T.Tensor: 
         # x1, x2, x3 in order: middle of the backbone to final layer output

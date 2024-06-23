@@ -1,0 +1,14 @@
+{        
+    "epochs": 30,
+    "batch_size": 32,
+    "train_split": 0.9,
+
+    "loss_scales": {
+        "rnn_energy_net_prediction": 1,
+        "rnn_energy_net_covariance": 0.33,
+        "rnn_energy_net_variance": 0.33,
+        "rnn_energy_net_z_loss": 0.33,
+        "keypoint_prediction": 1,
+        "crop_prediction": 1
+    }
+}
