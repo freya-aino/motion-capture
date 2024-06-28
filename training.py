@@ -8,12 +8,15 @@ import numpy as np
 import torch as T
 import torch.nn as nn
 import torch.utils.data as data
-import torchvision.models as torch_models
+import pytorch_lightning as pl
+import lovely_tensors as lt
+# import torchvision.models as torch_models
 
 from motion_capture.data.datasets import WIDERFaceDataset, WFLWDataset, COFWColorDataset, MPIIDataset, COCO2017PersonKeypointsDataset, COCO2017PanopticsDataset, COCO2017WholeBodyDataset
-
+from motion_capture.model.models import UpsampleCrossAttentionNetwork
 
 # ---------------------------------------------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     
@@ -24,9 +27,8 @@ if __name__ == "__main__":
         - Head - training to one singular narrow task
         
         backbone:
-            - ImageNet (all)
-            - COCOWholeBody (all)
-            - COCOPanoptics (segmentation)
+            - ImageNet
+            - COCOPanoptics
         Neck + Head bboxes:
             - WIDEFace (bboxes)
             - WFLW (bboxes)
@@ -39,22 +41,66 @@ if __name__ == "__main__":
         
     '''
     
+    # ---------------------------------------------------------------------------------------------------------------
+    # TMP PARAMS
+    IMAGE_SHAPE = (224, 224) # Width x Height
+    MAX_NUMBER_OF_INSTANCES = 12
+    BATCH_SIZE = 16
+    
+    BACKONE_OUTPUT_SIZE = 512
+    HEAD_LATENT_SIZE = 128
+    NECK_OUTPUT_SIZE = 128
+    
+    # ---------------------------------------------------------------------------------------------------------------
+    
+    print("loading model ...")
+    
+    model = UpsampleCrossAttentionNetwork(
+        output_size=4,
+        output_length=MAX_NUMBER_OF_INSTANCES,
+        backbone_output_size=BACKONE_OUTPUT_SIZE,
+        neck_output_size=NECK_OUTPUT_SIZE,
+        head_latent_size=HEAD_LATENT_SIZE,
+        loss_fn=T.nn.functional.l1_loss
+    )
+    
+    print("loading dataset ...")
+    
+    dataset = COCO2017PanopticsDataset(
+        image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
+        panoptics_path="//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations",
+        output_image_shape_WH=IMAGE_SHAPE,
+        instance_images_output_shape_WH=(112, 112),
+        max_number_of_instances=MAX_NUMBER_OF_INSTANCES,
+        load_val_only=True
+    )
+    train_dataset, val_dataset = data.random_split(dataset, [0.8, 0.2])
+    
+    train_dataloader = data.DataLoader(
+        dataset=train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=dataset.collate_fn_bbox,
+        num_workers=8,
+        persistent_workers=True
+    )
+    val_dataloader = data.DataLoader(
+        dataset=val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=dataset.collate_fn_bbox,
+        # num_workers=8,
+        # persistent_workers=True
+    )
     
     
+    print("training model ...")
     
-    
-    
-    
-    
+    trainer = pl.Trainer(accelerator="gpu", max_epochs=10)
+    trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
     
     
     # TODO: offload the experiment configuration to some 3. party tooling
-    # MODEL_NAME = "spatial_encoder_henry"
-    # EXPERIMENT_ID = "testing_trainability"
-    # MODEL_SAVE_PATH = f".\\model_saves\\{MODEL_NAME}\\{EXPERIMENT_ID}"
-    # if not os.path.exists(MODEL_SAVE_PATH):
-    #     print(f"creating: {MODEL_SAVE_PATH}")
-    #     os.mkdir(MODEL_SAVE_PATH)
     # config = json.load(open("./model/config.json", "r+"))
     # SPATIAL_ENCODER_CONFIG = config["model"]["spatial_encoder"]
     # TRAINING_CONFIG = config["training"]

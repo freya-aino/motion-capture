@@ -131,20 +131,21 @@ class UpsampleCrossAttentionrNeck(nn.Module):
         assert latent_size / 2 > 1, "latent_size must be at least be divisible by 2"
         
         codec_latent_size = latent_size
-        latent_size_mid = int(latent_size / 2)
+        mid_latent_size = int(latent_size / 2)
+        inner_latent_size = int(latent_size / 4)
         
         self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
         
         self.reverse1 = nn.Sequential(
-            C2f(codec_latent_size + latent_size_mid, latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False)
+            C2f(codec_latent_size + mid_latent_size, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False)
         )
         self.reverse2 = nn.Sequential(
-            C2f(latent_size_mid + (latent_size_mid // 2), latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False),
-            ConvBlock(latent_size_mid, latent_size_mid, kernel_size=3, stride=2, padding=1)
+            C2f(mid_latent_size + inner_latent_size, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(mid_latent_size, mid_latent_size, kernel_size=3, stride=2, padding=1)
         )
         self.reverse3 = nn.Sequential(
-            C2f(latent_size_mid * 2, latent_size_mid, kernel_size=1, n=int(depth_multiple), shortcut=False),
-            ConvBlock(latent_size_mid, codec_latent_size, kernel_size=3, stride=2, padding=1)
+            C2f(mid_latent_size * 2, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(mid_latent_size, codec_latent_size, kernel_size=3, stride=2, padding=1)
         )
         
         self.Q_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)

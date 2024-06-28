@@ -11,7 +11,7 @@ import numpy as np
 import torch as T
 from torch.utils import data
 from torchvision.transforms.functional import resize, crop
-from torchvision.io import read_image
+from torchvision.io import read_image, ImageReadMode
 
 from torch.nn.functional import one_hot
 
@@ -103,7 +103,7 @@ class WIDERFaceDataset(data.Dataset):
     def __getitem__(self, idx):
         
         datapoint = self.annotation_datapoints[idx]
-        image = read_image(datapoint["imagePath"]).to(dtype=T.float32)
+        image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
         
         # get bounding boxes and scale them
         bboxes = []
@@ -219,7 +219,7 @@ class WFLWDataset(data.Dataset):
         
         datapoint = self.all_datapoints[idx]
         
-        full_image = read_image(datapoint["imagePath"]).to(T.float32)
+        full_image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(T.float32)
         keypoints = datapoint["keypoints"]
         indicators = datapoint["indicators"]
         bbox = datapoint["faceBbox"]
@@ -405,7 +405,7 @@ class MPIIDataset(data.Dataset):
     def __getitem__(self, idx):
         dp = self.datapoints[idx]
         
-        image = read_image(os.path.join(self.image_folder_path, dp["image"]))
+        image = read_image(os.path.join(self.image_folder_path, dp["image"]), mode=ImageReadMode.RGB).to(dtype=T.float32)
         keypoints = T.tensor(dp["joints"])
         visibility = T.tensor(dp["joints_vis"], dtype=T.bool)
         
@@ -426,8 +426,8 @@ class MPIIDataset(data.Dataset):
         local_scaled_keypoints = scale_points(keypoints - bbox[0], person_image.shape[::-1][:2], self.output_person_image_shape)
         
         # scale full image and person image
-        person_image = resize(person_image, self.output_person_image_shape[::-1]).to(dtype=T.float32)
-        image = resize(image, self.output_full_image_shape[::-1]).to(dtype=T.float32)
+        person_image = resize(person_image, self.output_person_image_shape[::-1])
+        image = resize(image, self.output_full_image_shape[::-1])
         
         return {
             "fullImage": image,
@@ -446,6 +446,7 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
         annotation_folder_path: str,
         output_full_image_shape_WH: tuple,
         output_person_image_shape_WH: tuple,
+        min_person_bbox_size: int = 100, # in pixels for both width and height
         max_segmentation_points: int = 100,
         center_bbox: bool = True,
         filter_is_crowd: bool = True,
@@ -458,6 +459,7 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
         self.center_bbox = center_bbox
         self.output_full_image_shape = output_full_image_shape_WH
         self.output_person_image_shape = output_person_image_shape_WH
+        self.min_person_bbox_size = min_person_bbox_size
         
         self.max_segmentation_points = max_segmentation_points
         
@@ -499,7 +501,7 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
     def __getitem__(self, idx):
         image_datapoints = self.all_datapoints[idx]
         
-        full_image = read_image(image_datapoints[0]["imagePath"])
+        full_image = read_image(image_datapoints[0]["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
         
         out = []
         for datapoint in image_datapoints:
@@ -564,6 +566,10 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
         if filter_is_crowd and datapoint["iscrowd"]:
             return None
         
+        # remove too large bounding boxes
+        if datapoint["bbox"][2] < self.min_person_bbox_size or datapoint["bbox"][3] < self.min_person_bbox_size:
+            return None
+        
         # remove etries with multiple segmentations
         if len(datapoint["segmentation"]) == 0 or len(datapoint["segmentation"]) > 1:
             return None
@@ -594,7 +600,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         output_image_shape_WH: tuple,
         instance_images_output_shape_WH: tuple,
         max_number_of_instances: int = 10,
-        center_bbox: bool = True):
+        center_bbox: bool = True,
+        load_val_only: bool = False):
         
         super().__init__()
         
@@ -612,14 +619,20 @@ class COCO2017PanopticsDataset(data.Dataset):
             j = json.load(f)
             raw_data_annotations.extend(j["annotations"])
             raw_data_categories.extend(j["categories"])
-        with open(os.path.join(panoptics_path, "panoptic_train2017.json"), "r") as f:
-            j = json.load(f)
-            raw_data_annotations.extend(j["annotations"])
-            raw_data_categories.extend(j["categories"])
+        if not load_val_only:
+            with open(os.path.join(panoptics_path, "panoptic_train2017.json"), "r") as f:
+                j = json.load(f)
+                raw_data_annotations.extend(j["annotations"])
+                raw_data_categories.extend(j["categories"])
         
-        # self.categories_map = {cat["id"]: cat["name"] for cat in raw_data_categories}
+        self.categories_map = {cat["id"]: cat["name"] for cat in raw_data_categories}
         
         self.all_datapoints = self.format_datapoint(raw_data_annotations)
+    
+    def collate_fn_bbox(self, batch):
+        x = T.stack([b["image"] / 255 for b in batch])
+        y = T.stack([(b["bboxes"] / T.tensor([self.output_image_shape] * 2)).flatten(-2) for b in batch])
+        return x, y
         
     def __len__(self):
         return len(self.all_datapoints)
@@ -627,8 +640,8 @@ class COCO2017PanopticsDataset(data.Dataset):
     def __getitem__(self, idx):
         datapoint = self.all_datapoints[idx]
         
-        image = read_image(datapoint["originalImagePath"])
-        segmentation_mask = read_image(datapoint["segmentationImagePath"])
+        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        segmentation_mask = read_image(datapoint["segmentationImagePath"]).to(dtype=T.float32)
         
         bboxes = []
         categories = []
@@ -661,12 +674,17 @@ class COCO2017PanopticsDataset(data.Dataset):
         instance_images = T.stack([*instance_images[:self.max_number_of_instances], *[T.zeros_like(instance_images[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
         instance_mask_images = T.stack([*instance_mask_images[:self.max_number_of_instances], *[T.zeros_like(instance_mask_images[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
         
+        # create instance validity mask
+        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.float32)
+        instance_validity[:num_instances] = 1
+        
         # scale image and segmentation mask
         image = resize(image, self.output_image_shape[::-1])
         segmentation_mask = resize(segmentation_mask, self.output_image_shape[::-1])
         
         return {
             "image": image,
+            "instanceValidity": instance_validity,
             "segmentationMask": segmentation_mask,
             "bboxes": bboxes,
             "instanceImages": instance_images,
@@ -736,20 +754,22 @@ class COCO2017WholeBodyDataset(data.Dataset):
         self.image_id_path_map = {dp["id"]: os.path.join(self.image_folder_path, dp["file_name"]) for dp in raw_image_datapoints}
         
         self.all_datapoints = self.format_datapoints(raw_annotation_datapoints)
-        
+    
     def __len__(self):
         return len(self.all_datapoints)
     
     def __getitem__(self, idx):
         
+        
         datapoint = self.all_datapoints[idx]
         
         # load image
-        image = read_image(datapoint["imagePath"])
+        image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
         person_bbox = datapoint["personBbox"]
         face_bbox = datapoint["faceBbox"]
         left_hand_bbox = datapoint["leftHandBbox"]
         right_hand_bbox = datapoint["rightHandBbox"]
+        
         
         # crop persons
         person_crop = crop(image, person_bbox[0][1], person_bbox[0][0], person_bbox[1][1], person_bbox[1][0])

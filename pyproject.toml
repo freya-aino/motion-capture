@@ -14,6 +14,11 @@ calibrate-camera-system = {path = "../calibrate-camera-system/dist/calibrate_cam
 numpy-quaternion = "^2023.0.3"
 numpy = "^1.1.0"
 matplotlib = "^3.9.0"
+ipython = "^8.25.0"
+notebook = "^7.2.1"
+pandas = "^2.2.2"
+h5py = "^3.11.0"
+lovely-tensors = "^0.1.15"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

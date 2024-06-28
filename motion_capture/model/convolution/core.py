@@ -59,7 +59,7 @@ class C2f(nn.Module):
     def forward(self, x):
         y = list(self.conv1(x).split((self.hidden_channels, self.hidden_channels), 1))
         y.extend(module(y[-1]) for module in self.module_list)
-        return self.conv2(T.cat(y, 1))
+        return self.conv2(T.cat(y, dim = 1))
 
 
 class SPPF(nn.Module):

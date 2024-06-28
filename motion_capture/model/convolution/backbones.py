@@ -7,21 +7,22 @@ from .core import ConvBlock, C2f, SPPF
 class Backbone(nn.Module):
     def __init__(
         self, 
-        output_channels: int = 1024,
-        depth_multiple: int = 1):
+        output_channels: int,
+        depth_multiple: int = 1,
+        input_channels: int = 3):
         super(type(self), self).__init__()
         
-        assert output_channels / 8 > 1, "output_channels must be at least be divisible by 8"
+        assert output_channels / 16 > 1, "output_channels must be at least be divisible by 16"
         assert depth_multiple >= 1, "depth_multiple must be at least 1"
         
         size_4 = output_channels
-        size_3 = int(size_4 / 2)
-        size_2 = int(size_3 / 2)
-        size_1 = int(size_2 / 2)
-        size_0 = int(size_1 / 2)
+        size_3 = int(output_channels / 2)
+        size_2 = int(output_channels / 4)
+        size_1 = int(output_channels / 8)
+        size_0 = int(output_channels / 16)
         
         self.conv1 = nn.Sequential(
-            ConvBlock(3, size_0, kernel_size=3, stride=2, padding=1),
+            ConvBlock(input_channels, size_0, kernel_size=3, stride=2, padding=1),
             ConvBlock(size_0, size_1, kernel_size=3, stride=2, padding=1),
             C2f(size_1, size_1, kernel_size=1, n=int(depth_multiple), shortcut=True),
             ConvBlock(size_1, size_2, kernel_size=3, stride=2, padding=1),
@@ -41,7 +42,8 @@ class Backbone(nn.Module):
     
     def forward(self, x: T.Tensor) -> tuple[T.Tensor, T.Tensor, T.Tensor]:
         x1 = self.conv1(x)
-        x2 = self.conv2(x1)
+        x2 = self.conv2(x1)        
         x3 = self.conv3(x2)
+        
         return x1, x2, x3
 
