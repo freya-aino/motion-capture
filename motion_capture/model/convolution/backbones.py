@@ -39,11 +39,19 @@ class Backbone(nn.Module):
             C2f(size_4, size_4, kernel_size=1, n=int(depth_multiple), shortcut=True),
             SPPF(size_4, size_4)
         )
+        
+        self.batch_norm_x1 = nn.BatchNorm2d(size_2)
+        self.batch_norm_x2 = nn.BatchNorm2d(size_3)
+        self.batch_norm_x3 = nn.BatchNorm2d(size_4)
     
     def forward(self, x: T.Tensor) -> tuple[T.Tensor, T.Tensor, T.Tensor]:
         x1 = self.conv1(x)
-        x2 = self.conv2(x1)        
+        x2 = self.conv2(x1)
         x3 = self.conv3(x2)
+        
+        x1 = self.batch_norm_x1(x1)
+        x2 = self.batch_norm_x2(x2)
+        x3 = self.batch_norm_x3(x3)
         
         return x1, x2, x3
 

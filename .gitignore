@@ -4,3 +4,5 @@ __pycache__
 .ipynb_*
 dist/
 lightning_logs/
+logs/
+checkpoints/

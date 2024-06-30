@@ -12,6 +12,9 @@ import pytorch_lightning as pl
 import lovely_tensors as lt
 # import torchvision.models as torch_models
 
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.loggers import TensorBoardLogger
+
 from motion_capture.data.datasets import WIDERFaceDataset, WFLWDataset, COFWColorDataset, MPIIDataset, COCO2017PersonKeypointsDataset, COCO2017PanopticsDataset, COCO2017WholeBodyDataset
 from motion_capture.model.models import UpsampleCrossAttentionNetwork
 
@@ -43,13 +46,19 @@ if __name__ == "__main__":
     
     # ---------------------------------------------------------------------------------------------------------------
     # TMP PARAMS
-    IMAGE_SHAPE = (224, 224) # Width x Height
+    TRAINING_NAME = "backbone-general"
+    VERSION = "version_1"
+    CHECKPOINT_PATH = "checkpoints/"
+    
+    IMAGE_SHAPE = (448, 448) # Width x Height
     MAX_NUMBER_OF_INSTANCES = 12
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     
     BACKONE_OUTPUT_SIZE = 512
-    HEAD_LATENT_SIZE = 128
-    NECK_OUTPUT_SIZE = 128
+    HEAD_LATENT_SIZE = 256
+    NECK_OUTPUT_SIZE = 256
+    
+    NUM_WORKERS = 2
     
     # ---------------------------------------------------------------------------------------------------------------
     
@@ -61,7 +70,7 @@ if __name__ == "__main__":
         backbone_output_size=BACKONE_OUTPUT_SIZE,
         neck_output_size=NECK_OUTPUT_SIZE,
         head_latent_size=HEAD_LATENT_SIZE,
-        loss_fn=T.nn.functional.l1_loss
+        loss_fn=T.nn.functional.mse_loss
     )
     
     print("loading dataset ...")
@@ -72,7 +81,8 @@ if __name__ == "__main__":
         output_image_shape_WH=IMAGE_SHAPE,
         instance_images_output_shape_WH=(112, 112),
         max_number_of_instances=MAX_NUMBER_OF_INSTANCES,
-        load_val_only=True
+        load_segmentation_masks=False,
+        limit_to_first_n = 320
     )
     train_dataset, val_dataset = data.random_split(dataset, [0.8, 0.2])
     
@@ -81,7 +91,7 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         shuffle=True,
         collate_fn=dataset.collate_fn_bbox,
-        num_workers=8,
+        num_workers=NUM_WORKERS,
         persistent_workers=True
     )
     val_dataloader = data.DataLoader(
@@ -89,15 +99,79 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         shuffle=False,
         collate_fn=dataset.collate_fn_bbox,
-        # num_workers=8,
-        # persistent_workers=True
+        num_workers=NUM_WORKERS,
+        persistent_workers=True
     )
     
     
-    print("training model ...")
+    print(f"training model on {len(dataset)} datapoints ...")
     
-    trainer = pl.Trainer(accelerator="gpu", max_epochs=10)
+    # logger = TensorBoardLogger(
+    #     save_dir="logs/",
+    #     name=TRAINING_NAME, 
+    #     version = VERSION
+    # )
+    
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=CHECKPOINT_PATH,
+        save_top_k=2,
+        monitor="val_loss",
+        # filename="epoch{epoch}-{step}-{val_loss:.4f}",
+        # verbose=True,
+        # mode="min",
+        # every_n_epochs=1,
+    )
+    
+    # early_stopping = EarlyStopping(
+    #     monitor="val_loss",
+    #     min_delta=0.0,
+    #     patience=5,
+    #     verbose=True,
+    #     mode="min",
+    #     stopping_threshold=1 / 100 * 0.2 # 0.2 % of the normalized image size
+    # )
+    
+    trainer = pl.Trainer(
+        accelerator = "gpu",
+        # logger=logger,
+        # logger = False,
+        callbacks = [checkpoint_callback],
+        max_epochs = 5,
+        # fast_dev_run=True,
+        # check_val_every_n_epoch=1,
+        # num_sanity_val_steps=0,
+        # log_every_n_steps=1,
+        # gradient_clip_algorithm="norm",
+        # default_root_dir=CHECKPOINT_PATH,
+        # enable_checkpointing=True
+        # gradient_clip_val=1.0,
+    )
+    
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    
+    print(trainer.logged_metrics)
+    print(checkpoint_callback.best_k_models)
+    
+    # import tqdm
+    
+    # for batch in tqdm.tqdm(train_dataloader, total=len(train_dataloader)):
+    #     try:
+    #         x, y = batch
+    #         assert x.shape == (BATCH_SIZE, 3, *IMAGE_SHAPE)
+    #         assert y.shape == (BATCH_SIZE, MAX_NUMBER_OF_INSTANCES, 4)
+            
+    #     except Exception as e:
+    #         traceback.print_exc()
+    #     pass
+    
+    
+    # model = model.to("cuda")
+    # for batch_i, batch in tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader), desc="training"):
+        
+    #     cu_batch = (batch[0].to("cuda"), batch[1].to("cuda"))
+        
+    #     model.training_step(cu_batch, batch_idx=batch_i)
+        
     
     
     # TODO: offload the experiment configuration to some 3. party tooling

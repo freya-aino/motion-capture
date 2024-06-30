@@ -454,8 +454,6 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
         
         super().__init__()
         
-        print("WARINIG: COCO2017PersonKeypointsDataset removes all entries with multiple segmentations")
-        
         self.center_bbox = center_bbox
         self.output_full_image_shape = output_full_image_shape_WH
         self.output_person_image_shape = output_person_image_shape_WH
@@ -484,15 +482,14 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
         # gruop annotations by image_id
         image_annotation_map = {}
         for annotation in annotations:
-            if annotation["image_id"] not in image_annotation_map:
-                image_annotation_map[annotation["image_id"]] = []
-            
             formatted_annotation = self.format_datapoint(annotation, filter_is_crowd)
+            
             if formatted_annotation is not None:
+                if annotation["image_id"] not in image_annotation_map:
+                    image_annotation_map[annotation["image_id"]] = []
                 image_annotation_map[annotation["image_id"]].append(formatted_annotation)
         
         # annotations_by_image = pd.DataFrame(annotations).groupby("image_id").apply(lambda x: x.to_dict(orient="records")).to_list()
-        
         self.all_datapoints = list(image_annotation_map.values())
         
     def __len__(self):
@@ -601,7 +598,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         instance_images_output_shape_WH: tuple,
         max_number_of_instances: int = 10,
         center_bbox: bool = True,
-        load_val_only: bool = False):
+        load_segmentation_masks: bool = True,
+        limit_to_first_n = None):
         
         super().__init__()
         
@@ -612,33 +610,74 @@ class COCO2017PanopticsDataset(data.Dataset):
         self.instance_images_output_shape = instance_images_output_shape_WH
         self.max_number_of_instances = max_number_of_instances
         self.center_bbox = center_bbox
+        self.load_segmentation_masks = load_segmentation_masks
         
-        raw_data_annotations = []
-        raw_data_categories = []
-        with open(os.path.join(panoptics_path, "panoptic_val2017.json"), "r") as f:
-            j = json.load(f)
-            raw_data_annotations.extend(j["annotations"])
-            raw_data_categories.extend(j["categories"])
-        if not load_val_only:
-            with open(os.path.join(panoptics_path, "panoptic_train2017.json"), "r") as f:
-                j = json.load(f)
-                raw_data_annotations.extend(j["annotations"])
-                raw_data_categories.extend(j["categories"])
         
-        self.categories_map = {cat["id"]: cat["name"] for cat in raw_data_categories}
+        val_path = os.path.join(panoptics_path, "panoptic_val2017.json")
+        train_path = os.path.join(panoptics_path, "panoptic_train2017.json")
         
-        self.all_datapoints = self.format_datapoint(raw_data_annotations)
+        # load annotatins and categories
+        with open(train_path, "r") as f:
+            train_json = json.load(f)
+        with open(val_path, "r") as f:
+            val_json = json.load(f)
+        
+        # format categories
+        self.categorie_names = {}
+        for cat in train_json["categories"]:
+            self.categorie_names[cat["id"]] = cat["name"]
+        for cat in val_json["categories"]:
+            self.categorie_names[cat["id"]] = cat["name"]
+        
+        self.categorie_onehot = {}
+        for cat_i in sorted(list(self.categorie_names.keys())):
+            self.categorie_onehot[cat_i] = one_hot(T.tensor(cat_i), num_classes=max(self.categorie_names.keys()) + 1)
+        
+        # load annotations
+        self.all_datapoints = [
+            *zip([True] * len(train_json["annotations"]), train_json["annotations"]), 
+            *zip([False] * len(val_json["annotations"]), val_json["annotations"])
+        ]
+        
+        if limit_to_first_n:
+            self.all_datapoints = self.all_datapoints[:limit_to_first_n]
+        
+        print("!! WARNING: COCO2017PanopticsDataset segmentation masks contain images not referenced in the image folder, checking will take significantly longer !!")
     
     def collate_fn_bbox(self, batch):
+        batch = [b for b in batch if b is not None]
+        if len(batch) == 0:
+            return None
+        
         x = T.stack([b["image"] / 255 for b in batch])
         y = T.stack([(b["bboxes"] / T.tensor([self.output_image_shape] * 2)).flatten(-2) for b in batch])
-        return x, y
-        
-    def __len__(self):
-        return len(self.all_datapoints)
+        # y = T.stack([b["bboxes"].flatten(-2) for b in batch])
+        v = T.stack([b["instanceValidity"] for b in batch])
+        return x, y, v
     
-    def __getitem__(self, idx):
-        datapoint = self.all_datapoints[idx]
+    def format_datapoint(self, datapoint, is_train):
+        out = {
+            "originalImagePath": os.path.join(self.image_folder_path, datapoint["file_name"].replace(".png", ".jpg")),
+            "segments": [
+                {
+                    "category": self.categorie_onehot[segment["category_id"]],
+                    "segmentBbox": T.tensor(segment["bbox"]).reshape(2, 2)
+                } 
+                for segment in datapoint["segments_info"]
+            ]
+        }
+        if not self.load_segmentation_masks:
+            return out
+        
+        p = "panoptic_train2017" if is_train else "panoptic_val2017"
+        seg_path = os.path.join(self.panoptics_path, p, p, datapoint["file_name"])
+        out["segmentationImagePath"] = seg_path
+        return out
+    
+    def get_item_with_segmentation_mask(self, datapoint):
+        
+        if len(datapoint["segments"]) == 0:
+            return None
         
         image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
         segmentation_mask = read_image(datapoint["segmentationImagePath"]).to(dtype=T.float32)
@@ -653,19 +692,19 @@ class COCO2017PanopticsDataset(data.Dataset):
             
             instance_image = crop(image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
             instance_image = resize(instance_image, self.instance_images_output_shape[::-1])
+            instance_images.append(instance_image)
             
             instance_mask_image = crop(segmentation_mask, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
             instance_mask_image = resize(instance_mask_image, self.instance_images_output_shape[::-1])
+            instance_mask_images.append(instance_mask_image)
             
             # scale bbox and center if needed
             bbox = scale_points(bbox, image.shape[::-1][:2], self.output_image_shape).to(dtype=T.int16)
             if self.center_bbox:
                 bbox = center_bbox(bbox)
+            bboxes.append(bbox)
             
             categories.append(segment["category"])
-            bboxes.append(bbox)
-            instance_images.append(instance_image)
-            instance_mask_images.append(instance_mask_image)
         
         # pad to max number of instances
         num_instances = len(bboxes)
@@ -691,23 +730,60 @@ class COCO2017PanopticsDataset(data.Dataset):
             "instanceMaskImages": instance_mask_images,
             "categories": categories
         }
-    
-    def format_datapoint(self, raw_data_annotations):
-        annotations = []
         
-        for dp in raw_data_annotations:
+    def get_item_without_segmentation_mask(self, datapoint):
+        
+        if len(datapoint["segments"]) == 0:
+            return None
+        
+        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        
+        bboxes = []
+        categories = []
+        for segment in datapoint["segments"]:
             
-            annotations.append({
-                "originalImagePath": os.path.join(self.image_folder_path, dp["file_name"].replace(".png", ".jpg")),
-                "segmentationImagePath": os.path.join(self.panoptics_path, "panoptic_val2017", "panoptic_val2017", dp["file_name"]),
-                "segments": [
-                    {
-                        "category": one_hot(T.tensor(segment["category_id"] - 1), num_classes=max(self.categories_map.keys())),
-                        "segmentBbox": T.tensor(segment["bbox"]).reshape(2, 2),
-                    } for segment in dp["segments_info"]]
-            })
+            bbox = segment["segmentBbox"]
             
-        return annotations
+            # scale bbox and center if needed
+            bbox = scale_points(bbox, image.shape[::-1][:2], self.output_image_shape).to(dtype=T.int16)
+            if self.center_bbox:
+                bbox = center_bbox(bbox)
+            bboxes.append(bbox)
+            
+            categories.append(segment["category"])
+        
+        # pad to max number of instances
+        num_instances = len(datapoint["segments"])
+        bboxes = T.stack([*bboxes[:self.max_number_of_instances], *[T.zeros_like(bboxes[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        categories = T.stack([*categories[:self.max_number_of_instances], *[T.zeros_like(categories[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
+        
+        # create instance validity mask
+        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.float32)
+        instance_validity[:num_instances] = 1
+        
+        # scale image and segmentation mask
+        image = resize(image, self.output_image_shape[::-1])
+        
+        return {
+            "image": image,
+            "instanceValidity": instance_validity,
+            "bboxes": bboxes,
+            "categories": categories
+        }
+    
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        is_train, dp = self.all_datapoints[idx]
+        datapoint = self.format_datapoint(dp, is_train)
+        
+        if self.load_segmentation_masks:
+            return self.get_item_with_segmentation_mask(datapoint)
+        else:
+            return self.get_item_without_segmentation_mask(datapoint)
+        
+    
 
 
 class COCO2017WholeBodyDataset(data.Dataset):
