@@ -16,8 +16,6 @@ class SelfAttentionHead(nn.Module):
         
         super(type(self), self).__init__()
         
-        self.output_length = output_length
-        
         self.input_1d_conv = nn.Sequential(
             nn.Conv1d(input_size, latent_size, kernel_size=1, stride=1, padding=0, groups=1),
             nn.SiLU(),

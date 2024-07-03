@@ -12,258 +12,193 @@ import pytorch_lightning as pl
 import lovely_tensors as lt
 # import torchvision.models as torch_models
 
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
+from pytorch_lightning.loggers import MLFlowLogger
+from pytorch_lightning.tuner import tuning
 
 from motion_capture.data.datasets import WIDERFaceDataset, WFLWDataset, COFWColorDataset, MPIIDataset, COCO2017PersonKeypointsDataset, COCO2017PanopticsDataset, COCO2017WholeBodyDataset
-from motion_capture.model.models import UpsampleCrossAttentionNetwork
+from motion_capture.data.preprocessing import ImagePertubators
+from motion_capture.model.models import UpsampleCrossAttentionNetwork, find_best_checkpoint_path
+from motion_capture.data.datamodules import BboxDataModule
+
 
 # ---------------------------------------------------------------------------------------------------------------
 
-
 if __name__ == "__main__":
     
-    '''
-        Notes for training:
-        - Backbone - trained to generalize information
-        - Neck - training to sets of semantically similar tasks
-        - Head - training to one singular narrow task
-        
-        backbone:
-            - ImageNet
-            - COCOPanoptics
-        Neck + Head bboxes:
-            - WIDEFace (bboxes)
-            - WFLW (bboxes)
-            - COCOWholeBody (bboxes)
-            - MPII (bboxes)
-        Neck + Head keypoints:
-            - WFLW (keypoints)
-            - COCOPersonKeypoints (keypoints)
-            - MPII (keypoints)
-        
-    '''
+    EXPERIMENT_NAME = "bbox_backbone"
+    RUN_NAME = "version_1"
+    MODEL_CHECKPOINTS_PATH = "checkpoints"
+    RANDOM_SEED = 1
     
-    # ---------------------------------------------------------------------------------------------------------------
-    # TMP PARAMS
-    TRAINING_NAME = "backbone-general"
-    VERSION = "version_1"
-    CHECKPOINT_PATH = "checkpoints/"
+    DEVICE = T.device("cuda:0")
+    CONTINUE_TRAINING = True
+    NUM_TRAIN_WORKERS = 8
+    NUM_VAL_WORKERS = 4
+    IMAGE_SHAPE = (224, 224) # Width x Height
+    BATCH_SIZE = 80
+    TRAIN_VAL_TEST_SPLIT = [0.8, 0.15, 0.05]
     
-    IMAGE_SHAPE = (448, 448) # Width x Height
-    MAX_NUMBER_OF_INSTANCES = 12
-    BATCH_SIZE = 32
+    OUTPUT_SIZE = 4
+    OUTPUT_LENGTH = 32
     
-    BACKONE_OUTPUT_SIZE = 512
-    HEAD_LATENT_SIZE = 256
-    NECK_OUTPUT_SIZE = 256
+    # general params
+    LOGGER_ARGS = {
+        "save_dir": "logs/",
+        "tracking_uri": None,
+        "tags": ["bbox", "backbone"],
+    }
     
-    NUM_WORKERS = 2
+    CHEKCPOINT_CALLBACK_ARGS = {
+        "save_top_k": 3,
+        "every_n_epochs": 1,
+        "monitor": "val_loss",
+        "filename": "{epoch}-{step}-{val_loss:.4f}",
+        "mode": "min",
+    }
     
-    # ---------------------------------------------------------------------------------------------------------------
+    MODEL_STRUCTURE_ARGS = {
+        "output_size": OUTPUT_SIZE,
+        "output_length": OUTPUT_LENGTH,
+        "backbone_output_size": 512,
+        "neck_output_size": 256,
+        "head_latent_size": 256,
+    }
     
-    print("loading model ...")
+    MODEL_TRAIN_ARGS = {
+        "loss_fn": T.nn.functional.l1_loss,
+        "optimizer": T.optim.Adam,
+        "optimizer_kwargs": {
+            "lr": 1e-04,
+            "weight_decay": 0.005,
+            "momentum": 0.9,
+            "rho": 0.5,
+        },
+        "lr_scheduler": T.optim.lr_scheduler.CosineAnnealingLR,
+        "lr_scheduler_kwargs": {
+            "T_max": 10,
+            "eta_min": 1e-06,
+            "last_epoch": -1,
+        }
+    }
     
-    model = UpsampleCrossAttentionNetwork(
-        output_size=4,
-        output_length=MAX_NUMBER_OF_INSTANCES,
-        backbone_output_size=BACKONE_OUTPUT_SIZE,
-        neck_output_size=NECK_OUTPUT_SIZE,
-        head_latent_size=HEAD_LATENT_SIZE,
-        loss_fn=T.nn.functional.mse_loss
-    )
+    TRAINER_ARGS = {
+        "max_epochs": 200,
+        "num_sanity_val_steps": 0,
+        "log_every_n_steps": 1,
+        "accumulate_grad_batches": 5,
+        "gradient_clip_algorithm": "norm",
+        "gradient_clip_val": 0.2
+    }
     
-    print("loading dataset ...")
-    
-    dataset = COCO2017PanopticsDataset(
-        image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
-        panoptics_path="//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations",
-        output_image_shape_WH=IMAGE_SHAPE,
-        instance_images_output_shape_WH=(112, 112),
-        max_number_of_instances=MAX_NUMBER_OF_INSTANCES,
-        load_segmentation_masks=False,
-        limit_to_first_n = 320
-    )
-    train_dataset, val_dataset = data.random_split(dataset, [0.8, 0.2])
-    
-    train_dataloader = data.DataLoader(
-        dataset=train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        collate_fn=dataset.collate_fn_bbox,
-        num_workers=NUM_WORKERS,
-        persistent_workers=True
-    )
-    val_dataloader = data.DataLoader(
-        dataset=val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        collate_fn=dataset.collate_fn_bbox,
-        num_workers=NUM_WORKERS,
-        persistent_workers=True
-    )
+    # stochastic weight averaging
+    SWA_ARGS = {
+        "swa_lrs": [1e-04, 1e-05],
+        "swa_epoch_start": 5,
+        "annealing_epochs": 10,
+        "annealing_strategy": "cosine",
+    }
     
     
-    print(f"training model on {len(dataset)} datapoints ...")
-    
-    # logger = TensorBoardLogger(
-    #     save_dir="logs/",
-    #     name=TRAINING_NAME, 
-    #     version = VERSION
+    DATASET_ARGS = {
+        "datase_classt": WFLWDataset,
+        "dataset_kwargs": {
+            "output_full_image_shape_WH": IMAGE_SHAPE,
+            "output_face_image_shape_WH": (112, 112),
+            "max_number_of_faces": OUTPUT_LENGTH,
+            "image_path": "//192.168.2.206/data/datasets/WFLW/images",
+            "annotation_path": "//192.168.2.206/data/datasets/WFLW/annotations",
+            "image_pertubator": ImagePertubators.BASIC(),
+            "padding": "random_elements"
+        },
+        "image_key": "fullImage",
+        "bbox_key": "faceBboxes"
+    }
+    # dataset = COCO2017PanopticsDataset(
+    #     image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
+    #     panoptics_path="//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations",
+    #     output_image_shape_WH=IMAGE_SHAPE,
+    #     instance_images_output_shape_WH=(8, 8),
+    #     max_number_of_instances=OUTPUT_LENGTH,
+    #     load_segmentation_masks=False,
+    #     image_pertubator=ImagePertubators.BASIC(),
+    #     # limit_to_first_n = 320
+    # )
+    # dataset = WIDERFaceDataset(
+    #     output_image_shape_WH=IMAGE_SHAPE, 
+    #     max_number_of_faces=OUTPUT_LENGTH,
+    #     train_path="//192.168.2.206/data/datasets/WIDER-Face/train",
+    #     val_path="//192.168.2.206/data/datasets/WIDER-Face/val",
+    #     image_pertubator = ImagePertubators.BASIC(),
+    #     center_bbox = True
     # )
     
+    
+    # ---------------------------------------------------------------------------------------------------------------
+    print("initializing ...")
+    
+    pl.seed_everything(RANDOM_SEED)
+    
+    # ---------------------------------------------------------------------------------------------------------------
+    print("initializing trainer ...")
+    
+    current_checkpoint_path = os.path.join(MODEL_CHECKPOINTS_PATH, EXPERIMENT_NAME, RUN_NAME)
+    logger = MLFlowLogger(
+        experiment_name=EXPERIMENT_NAME,
+        run_name=RUN_NAME,
+        **LOGGER_ARGS
+    )
     checkpoint_callback = ModelCheckpoint(
-        dirpath=CHECKPOINT_PATH,
-        save_top_k=2,
-        monitor="val_loss",
-        # filename="epoch{epoch}-{step}-{val_loss:.4f}",
-        # verbose=True,
-        # mode="min",
-        # every_n_epochs=1,
+        dirpath = current_checkpoint_path,
+        verbose = True,
+        **CHEKCPOINT_CALLBACK_ARGS
     )
-    
-    # early_stopping = EarlyStopping(
-    #     monitor="val_loss",
-    #     min_delta=0.0,
-    #     patience=5,
-    #     verbose=True,
-    #     mode="min",
-    #     stopping_threshold=1 / 100 * 0.2 # 0.2 % of the normalized image size
-    # )
+    swa = StochasticWeightAveraging(**SWA_ARGS, device=DEVICE)
     
     trainer = pl.Trainer(
-        accelerator = "gpu",
-        # logger=logger,
-        # logger = False,
-        callbacks = [checkpoint_callback],
-        max_epochs = 5,
+        accelerator = DEVICE,
+        logger=logger,
+        callbacks = [checkpoint_callback, swa],
+        **TRAINER_ARGS,
         # fast_dev_run=True,
-        # check_val_every_n_epoch=1,
-        # num_sanity_val_steps=0,
-        # log_every_n_steps=1,
-        # gradient_clip_algorithm="norm",
-        # default_root_dir=CHECKPOINT_PATH,
-        # enable_checkpointing=True
-        # gradient_clip_val=1.0,
     )
     
-    trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    # ---------------------------------------------------------------------------------------------------------------
+    print("initialize model ...")
     
-    print(trainer.logged_metrics)
-    print(checkpoint_callback.best_k_models)
+    if CONTINUE_TRAINING:
+        best_ckpt_pth = find_best_checkpoint_path(current_checkpoint_path)
+        model = UpsampleCrossAttentionNetwork.load_from_checkpoint(best_ckpt_pth)
+    else:
+        model = UpsampleCrossAttentionNetwork(**MODEL_STRUCTURE_ARGS, **MODEL_TRAIN_ARGS)
     
-    # import tqdm
+    # ---------------------------------------------------------------------------------------------------------------
+    print("initialize dataset ...")
     
-    # for batch in tqdm.tqdm(train_dataloader, total=len(train_dataloader)):
-    #     try:
-    #         x, y = batch
-    #         assert x.shape == (BATCH_SIZE, 3, *IMAGE_SHAPE)
-    #         assert y.shape == (BATCH_SIZE, MAX_NUMBER_OF_INSTANCES, 4)
-            
-    #     except Exception as e:
-    #         traceback.print_exc()
-    #     pass
+    data_module = BboxDataModule(
+        **DATASET_ARGS,
+        image_shape=IMAGE_SHAPE,
+        batch_size=BATCH_SIZE,
+        train_val_test_split=TRAIN_VAL_TEST_SPLIT,
+        num_train_workers=NUM_TRAIN_WORKERS,
+        num_val_workers=NUM_VAL_WORKERS
+    )
     
+    # ---------------------------------------------------------------------------------------------------------------
+    # print("find lr ...")
+    # tuner = tuning.Tuner(trainer=trainer)
+    # lr_finder = tuner.lr_find(
+    #     model=model, 
+    #     train_dataloaders=train_dataloader, 
+    #     val_dataloaders=val_dataloader,
+    #     num_training=50
+    # )
+    # fig = lr_finder.plot(suggest=True)
+    # fig.show()
+    # input("Press Enter to continue ...")
     
-    # model = model.to("cuda")
-    # for batch_i, batch in tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader), desc="training"):
-        
-    #     cu_batch = (batch[0].to("cuda"), batch[1].to("cuda"))
-        
-    #     model.training_step(cu_batch, batch_idx=batch_i)
-        
+    # ---------------------------------------------------------------------------------------------------------------
+    print("fitting model ...")
     
+    trainer.fit(model=model, datamodule=data_module)
     
-    # TODO: offload the experiment configuration to some 3. party tooling
-    # config = json.load(open("./model/config.json", "r+"))
-    # SPATIAL_ENCODER_CONFIG = config["model"]["spatial_encoder"]
-    # TRAINING_CONFIG = config["training"]
-    # DEVICE = config["device"]
-    
-    # # MODEL
-    # spatial_encoder_backbone = torch_models.resnet18(weights = torch_models.ResNet18_Weights.DEFAULT)
-    # spatial_encoder = SpatialEncoder(backbone=spatial_encoder_backbone, config=SPATIAL_ENCODER_CONFIG)
-    # spatial_encoder = spatial_encoder.eval().to(DEVICE)
-    # # DATASET & SAMPLER & DATALOADER
-    # wider_face_dataset = WIDERFaceDataset(
-    #     image_shape=SPATIAL_ENCODER_CONFIG["image_encoder"]["input_shape"], 
-    #     max_number_of_faces=SPATIAL_ENCODER_CONFIG["spatial_transformer"]["output_size"] // 4)
-    
-    # wider_face_indecies = [*range(len(wider_face_dataset))]
-    # train_split = int(len(wider_face_dataset) * TRAINING_CONFIG["train_split"])
-    # wider_face_sampler_train = data.SubsetRandomSampler(wider_face_indecies[:train_split])
-    # wider_face_sampler_test = data.SubsetRandomSampler(wider_face_indecies[train_split:])
-
-    # wider_face_dataloader_train = data.DataLoader(
-    #     wider_face_dataset, 
-    #     num_workers=16,
-    #     pin_memory=True,
-    #     sampler=wider_face_sampler_train, batch_size=TRAINING_CONFIG["batch_size"])
-    # wider_face_dataloader_test = data.DataLoader(
-    #     wider_face_dataset, 
-    #     num_workers=16,
-    #     pin_memory=True,
-    #     sampler=wider_face_sampler_test, batch_size=TRAINING_CONFIG["batch_size"])
-
-
-    # # OPTIMIZER & METRICS
-    # spatial_encoder_opt = T.optim.RAdam(spatial_encoder.parameters())
-    # prediction_loss_f = nn.SmoothL1Loss()
-    
-    # for epoch_i in range(TRAINING_CONFIG["epochs"]):
-
-    #     print(f"epoch: {epoch_i}")
-
-    #     spatial_encoder.train()
-    #     train_loss = 0
-    #     for datapoint in wider_face_dataloader_train:
-
-    #         # dt = time.time()
-
-    #         X = datapoint["image"].to(DEVICE).unsqueeze(1)
-    #         Y = datapoint["face_bbox"].to(DEVICE).unsqueeze(1)
-
-    #         y_hat = spatial_encoder(X)
-
-
-    #         loss = prediction_loss_f(y_hat, Y)
-    #         loss = loss.nanmean()
-
-    #         train_loss += loss.detach().to("cpu").item()
-
-    #         spatial_encoder_opt.zero_grad()
-    #         loss.backward()
-    #         spatial_encoder_opt.step()
-
-    #         if "cuda" in DEVICE:
-    #             T.cuda.synchronize()
-
-    #         # print(f"time taken: {time.time() - dt}")
-
-    #     print(f"\ttraining loss:  \t{train_loss / len(wider_face_dataloader_train)}")
-
-
-    #     spatial_encoder.eval()
-    #     test_loss = 0
-    #     for datapoint in wider_face_dataloader_test:
-
-    #         X = datapoint["image"].to(DEVICE).unsqueeze(1)
-    #         Y = datapoint["face_bbox"].to(DEVICE).unsqueeze(1)
-
-    #         y_hat = spatial_encoder(X)
-
-    #         loss = prediction_loss_f(y_hat, Y)
-    #         loss = loss.nanmean()
-
-    #         test_loss += loss.detach().to('cpu').item()
-
-    #         if "cuda" in DEVICE:
-    #             T.cuda.synchronize()
-
-
-    #     print(f"\tvalidation loss:\t{test_loss / len(wider_face_dataloader_test)}")
-
-
-    #     if epoch_i != 0 and epoch_i % 10 == 0:
-    #         print("saving model ...")
-    #         T.save(spatial_encoder.state_dict(), os.path.join(MODEL_SAVE_PATH, f"{epoch_i}.pth"))

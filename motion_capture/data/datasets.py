@@ -1,3 +1,5 @@
+import random
+import time
 import math
 import re
 import os
@@ -9,16 +11,21 @@ import h5py
 
 import numpy as np
 import torch as T
+import torchvision.transforms as TVTransform
+
 from torch.utils import data
 from torchvision.transforms.functional import resize, crop
 from torchvision.io import read_image, ImageReadMode
-
 from torch.nn.functional import one_hot
+
+from .preprocessing import ImagePertubators
 
 # ------------------------------------------------------------------------
 
 # Segmentation for classification: 
 # - https://github.com/qubvel/segmentation_models.pytorch
+
+# ------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------
 
@@ -69,8 +76,6 @@ def center_bbox(bbox: T.Tensor) -> T.Tensor:
 
 
 
-
-
 class WIDERFaceDataset(data.Dataset):
     
     def __init__(self,
@@ -78,14 +83,18 @@ class WIDERFaceDataset(data.Dataset):
         max_number_of_faces: int,
         train_path: str, 
         val_path: str,
-        center_bbox: bool = True):
+        center_bbox: bool = True,
+        image_pertubator = None):
         
         super(type(self), self).__init__()
-
+        
         self.output_image_shape = output_image_shape_WH
         self.max_number_of_faces = max_number_of_faces
         self.center_bbox = center_bbox
-
+        
+        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
+        
+        
         train_annotations = self.extract_formated_datapoints(
             anno_file_path=os.path.join(train_path, "train_bbx_gt.txt"),
             image_file_path=os.path.join(train_path, "images")
@@ -95,15 +104,23 @@ class WIDERFaceDataset(data.Dataset):
             image_file_path=os.path.join(val_path, "images")
         )
         self.annotation_datapoints = [*train_annotations, *val_annotations]
-
-
+    
+    def collate_fn_bbox(self, batch):
+        x = T.stack([b["image"] / 255 for b in batch])
+        y = T.stack([(b["faceBbox"] / T.tensor(self.output_image_shape)).flatten(-2) for b in batch])
+        v = T.stack([b["bboxValidity"] for b in batch])
+        return x, y, v
+    
     def __len__(self):
         return len(self.annotation_datapoints)
     
     def __getitem__(self, idx):
         
+        dt = time.perf_counter()
+        
         datapoint = self.annotation_datapoints[idx]
-        image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB)
+        image = self.image_pertubator(image).to(dtype=T.float32)
         
         # get bounding boxes and scale them
         bboxes = []
@@ -121,37 +138,19 @@ class WIDERFaceDataset(data.Dataset):
         padding = [T.zeros((2, 2), dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
         bboxes = T.stack([*bboxes, *padding], dim=0)
         
+        bbox_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
+        bbox_validity[:len(bboxes)] = True
+        
         # resize image
         image = resize(image, self.output_image_shape[::-1], antialias=True)
         
-        
         return {
             "image": image,
-            "faceBbox": bboxes
+            "faceBbox": bboxes,
+            "bboxValidity": bbox_validity
         }
     
     def extract_formated_datapoints(self, anno_file_path: str, image_file_path: str):
-        '''
-            The structure of each entery is:
-                File name
-                Number of faces
-                [
-                    [x1, y1, w, h, blur, expression, illumination, invalid, occlusion, pose]
-                ]
-            (the last line is repeated for the number of faces that exist in the image)
-            the formatted output looks like this (example):
-                {
-                    'image_path': '.\\WIDER-Face\\train\\images\\0--Parade\\0_Parade_marchingband_1_849.jpg',
-                    'number_of_faces': 1,
-                    'faces': [
-                        {
-                            'bbox': [449, 330, 122, 149],
-                            'indicators': [0, 0, 0, 0, 0, 0]
-                        }
-                    ]
-                }
-        '''
-        
         formated_datapoints = []
         with open(anno_file_path, "r") as f:
             
@@ -194,95 +193,124 @@ class WFLWDataset(data.Dataset):
         output_face_image_shape_WH: tuple,
         image_path: str,
         annotation_path: str,
+        max_number_of_faces: int,
+        image_pertubator = None,
+        padding = "zeros",
         center_bbox: bool = True):
         
         super(type(self), self).__init__()
         
-        print("WARNING: WFLW dataset currently returns one image / face pair even when there are multiple faces in the image")
-        
         self.center_bbox = center_bbox
+        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
+        self.max_number_of_faces = max_number_of_faces
         
         self.output_full_image_shape = output_full_image_shape_WH
         self.output_face_image_shape = output_face_image_shape_WH
         
         self.image_folder_path = image_path
+        self.padding = padding
         
         train_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "train.txt"))
         validation_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "validation.txt"))
         
-        self.all_datapoints = [*train_datapoints, *validation_datapoints]
+        all_datapoints = [*train_datapoints, *validation_datapoints]
         
+        # group datapoints by image path
+        all_datapoints_by_image = {}
+        for dp in all_datapoints:
+            if dp["imagePath"] not in all_datapoints_by_image:
+                all_datapoints_by_image[dp["imagePath"]] = []
+            all_datapoints_by_image[dp["imagePath"]].append(dp)
+        
+        self.all_datapoints = list(all_datapoints_by_image.values())
+    
     def __len__(self):
         return (len(self.all_datapoints))
     
     def __getitem__(self, idx):
         
-        datapoint = self.all_datapoints[idx]
+        datapoints = self.all_datapoints[idx][:self.max_number_of_faces]
         
-        full_image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(T.float32)
-        keypoints = datapoint["keypoints"]
-        indicators = datapoint["indicators"]
-        bbox = datapoint["faceBbox"]
+        if len(datapoints) == 0:
+            return None
         
-        # global keypoint and bbx scaling
-        full_scaled_keypoints = scale_points(keypoints, full_image.shape[::-1][:2], self.output_full_image_shape)
-        full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], self.output_full_image_shape).to(dtype=T.int16)
+        face_images = []
+        face_bboxes = []
+        all_full_scale_keypoints = []
+        all_local_scale_keypoints = []
+        all_indicators = []
         
-        # create center bounding boxes
-        if self.center_bbox:
-            full_scaled_bbox = center_bbox(full_scaled_bbox)
+        full_image = read_image(datapoints[0]["imagePath"], mode=ImageReadMode.RGB)
         
-        # create face crop and scale keypoints to face crop
-        face_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
-        local_scaled_keypoints = scale_points(keypoints - bbox[0], face_image.shape[::-1][:2], self.output_face_image_shape)
+        for datapoint in datapoints:
+            keypoints = datapoint["keypoints"]
+            indicators = datapoint["indicators"]
+            bbox = datapoint["faceBbox"]
+            
+            # create face crop and scale keypoints to face crop
+            face_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+            local_scaled_keypoints = scale_points(keypoints - bbox[0], face_image.shape[::-1][:2], self.output_face_image_shape)
+            
+            # global keypoint and bbx scaling
+            full_scaled_keypoints = scale_points(keypoints, full_image.shape[::-1][:2], self.output_full_image_shape)
+            bbox = scale_points(bbox, full_image.shape[::-1][:2], self.output_full_image_shape).to(dtype=T.int16)
+            
+            # create center bounding boxes
+            if self.center_bbox:
+                bbox = center_bbox(bbox)
+            
+            # scale face crop and add pertubation
+            face_image = resize(face_image, self.output_face_image_shape[::-1], antialias=True)
+            face_image = self.image_pertubator(face_image).to(T.float32)
+            
+            face_images.append(face_image)
+            face_bboxes.append(bbox)
+            all_full_scale_keypoints.append(full_scaled_keypoints)
+            all_local_scale_keypoints.append(local_scaled_keypoints)
+            all_indicators.append(indicators)
         
-        # scale face crop and full image
-        face_image = resize(face_image, self.output_face_image_shape[::-1], antialias=True)
+        if self.padding == "zeros":
+            # pad zeros
+            for i in range(max(0, self.max_number_of_faces - len(datapoints))):
+                face_images.append(T.zeros_like(face_images[0]))
+                face_bboxes.append(T.zeros_like(face_bboxes[0]))
+                all_full_scale_keypoints.append(T.zeros_like(all_full_scale_keypoints[0]))
+                all_local_scale_keypoints.append(T.zeros_like(all_local_scale_keypoints[0]))
+                all_indicators.append(T.zeros_like(all_indicators[0]))
+        elif self.padding == "random_elements":
+            for i in range(max(0, self.max_number_of_faces - len(datapoints))):
+                rand_idx = random.randint(0, len(datapoints) - 1)
+                face_images.append(face_images[rand_idx])
+                face_bboxes.append(face_bboxes[rand_idx])
+                all_full_scale_keypoints.append(all_full_scale_keypoints[rand_idx])
+                all_local_scale_keypoints.append(all_local_scale_keypoints[rand_idx])
+                all_indicators.append(all_indicators[rand_idx])
+        
+        # stack all bounding boxes and padd
+        face_images = T.stack(face_images)
+        face_bboxes = T.stack(face_bboxes)
+        all_full_scale_keypoints = T.stack(all_full_scale_keypoints)
+        all_local_scale_keypoints = T.stack(all_local_scale_keypoints)
+        all_indicators = T.stack(all_indicators)
+        
+        face_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
+        face_validity[:len(datapoints)] = True
+        
+        # resize full image
         full_image = resize(full_image, self.output_full_image_shape[::-1], antialias=True)
+        full_image = self.image_pertubator(full_image).to(T.float32)
         
         return {
             "fullImage": full_image,
-            "faceBbox": full_scaled_bbox,
-            "faceImage": face_image, # in format [Channels, Height, Width]
-            "globalKeypoints": full_scaled_keypoints, # in format [Width, Height] in image size
-            "localKeypoints": local_scaled_keypoints, # in format [Width, Height] in face crop size
+            "faceBboxes": face_bboxes,
+            "faceValidity": face_validity,
+            "faceImages": face_images, # in format [Channels, Height, Width]
+            "globalKeypoints": all_full_scale_keypoints, # in format [Width, Height] in image size
+            "localKeypoints": all_local_scale_keypoints, # in format [Width, Height] in face crop size
             "indicators": indicators
         }
         
     def extract_formatted_datapoints(self, path):
-        '''
-        file structure from the README:
-        
-            coordinates of 98 landmarks (196) + 
-            coordinates of upper left corner and lower right corner of detection rectangle (4) + 
-            attributes annotations (6) + 
-            image name (1)
-            
-            namely
-            
-            x0 y0 ... x97 y97 
-            x_min_rect y_min_rect x_max_rect y_max_rect 
-            pose:
-                normal pose->0
-                large pose->1
-            expression:
-                normal expression->0
-                exaggerate expression->1
-            illumination:
-                normal illumination->0
-                extreme illumination->1
-            make-up:
-                no make-up->0
-                make-up->1
-            occlusion:
-                no occlusion->0
-                occlusion->1
-            blur:
-                clear->0
-                blur->1
-            image_name
-        '''
-        
         individual_datapoints = []
         with open(path) as f:
             for l in f.readlines():
@@ -597,6 +625,7 @@ class COCO2017PanopticsDataset(data.Dataset):
         output_image_shape_WH: tuple,
         instance_images_output_shape_WH: tuple,
         max_number_of_instances: int = 10,
+        image_pertubator = None,
         center_bbox: bool = True,
         load_segmentation_masks: bool = True,
         limit_to_first_n = None):
@@ -611,6 +640,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         self.max_number_of_instances = max_number_of_instances
         self.center_bbox = center_bbox
         self.load_segmentation_masks = load_segmentation_masks
+        
+        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
         
         
         val_path = os.path.join(panoptics_path, "panoptic_val2017.json")
@@ -679,7 +710,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         if len(datapoint["segments"]) == 0:
             return None
         
-        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB)
+        image = self.image_pertubator(image).to(dtype=T.float32)
         segmentation_mask = read_image(datapoint["segmentationImagePath"]).to(dtype=T.float32)
         
         bboxes = []
@@ -714,8 +746,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         instance_mask_images = T.stack([*instance_mask_images[:self.max_number_of_instances], *[T.zeros_like(instance_mask_images[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
         
         # create instance validity mask
-        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.float32)
-        instance_validity[:num_instances] = 1
+        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.bool)
+        instance_validity[:num_instances] = True
         
         # scale image and segmentation mask
         image = resize(image, self.output_image_shape[::-1])
@@ -736,7 +768,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         if len(datapoint["segments"]) == 0:
             return None
         
-        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB)
+        image = self.image_pertubator(image).to(dtype=T.float32)
         
         bboxes = []
         categories = []
@@ -758,8 +791,8 @@ class COCO2017PanopticsDataset(data.Dataset):
         categories = T.stack([*categories[:self.max_number_of_instances], *[T.zeros_like(categories[0]) for _ in range(max(0, self.max_number_of_instances - num_instances))]])
         
         # create instance validity mask
-        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.float32)
-        instance_validity[:num_instances] = 1
+        instance_validity = T.zeros(self.max_number_of_instances, dtype=T.bool)
+        instance_validity[:num_instances] = True
         
         # scale image and segmentation mask
         image = resize(image, self.output_image_shape[::-1])
@@ -779,12 +812,11 @@ class COCO2017PanopticsDataset(data.Dataset):
         datapoint = self.format_datapoint(dp, is_train)
         
         if self.load_segmentation_masks:
-            return self.get_item_with_segmentation_mask(datapoint)
+            out = self.get_item_with_segmentation_mask(datapoint)
         else:
-            return self.get_item_without_segmentation_mask(datapoint)
+            out = self.get_item_without_segmentation_mask(datapoint)
         
-    
-
+        return out
 
 class COCO2017WholeBodyDataset(data.Dataset):
     
