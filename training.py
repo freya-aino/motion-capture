@@ -11,14 +11,15 @@ import torch.nn as nn
 import torch.utils.data as data
 import pytorch_lightning as pl
 import lovely_tensors as lt
-# import torchvision.models as torch_models
+
+import motion_capture.data.datasets as datasets # WIDERFaceDataset, WFLWDataset, COFWColorDataset, MPIIDataset, COCO2017PersonKeypointsDataset, COCO2017PanopticsDataset, COCO2017WholeBodyDataset
+import motion_capture.data.preprocessing as preprocessing
 
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 from pytorch_lightning.loggers import MLFlowLogger
 from pytorch_lightning.tuner import tuning
+# from optuna.integration.pytorch_lightning import PyTorchLightningPruningCallback
 
-import motion_capture.data.datasets as datasets # WIDERFaceDataset, WFLWDataset, COFWColorDataset, MPIIDataset, COCO2017PersonKeypointsDataset, COCO2017PanopticsDataset, COCO2017WholeBodyDataset
-import motion_capture.data.preprocessing as preprocessing
 from motion_capture.model.models import UpsampleCrossAttentionNetwork, find_best_checkpoint_path
 from motion_capture.data.datamodules import BboxDataModule
 
@@ -34,19 +35,23 @@ def objective(cfg: dict): # , trial: optuna.Trial
     
     print("initializing logger ...")
     logger = MLFlowLogger(
-        experiment_name=cfg.experimentName,
-        run_name=cfg["runName"],
-        **cfg.logger
+        # experiment_name=cfg["experimentName"],
+        # run_name=cfg["runName"],
+        **cfg["logger"]
     )
-#     # ---------------------------------------------------------------------------------------------------------------
-#     print("initializing callbacks ...")
-#     current_checkpoint_path = os.path.join(cfg.modelCheckpointPath, cfg.experimentName, RUN_NAME)
-#     checkpoint_callback = ModelCheckpoint(
-#         dirpath = current_checkpoint_path,
-#         verbose = True,
-#         **cfg.callbacks.checkpoint
-#     )
-#     swa = StochasticWeightAveraging(device=cfg.device, **cfg.callbacks.swa)
+    
+    # ---------------------------------------------------------------------------------------------------------------
+    print("initializing callbacks ...")
+    
+    current_checkpoint_path = os.path.join(cfg.modelCheckpointPath, cfg.experimentName, cfg["runName"])
+    checkpoint_callback = ModelCheckpoint(
+        dirpath = current_checkpoint_path,
+        verbose = True,
+        **cfg.callbacks.checkpoint
+    )
+    swa = StochasticWeightAveraging(device=cfg.device, **cfg.callbacks.swa)
+    # optuna_callback = PyTorchLightningPruningCallback
+    
 #     # ---------------------------------------------------------------------------------------------------------------
 #     print("initializing trainer ...")
 #     trainer = pl.Trainer(
@@ -76,26 +81,36 @@ def objective(cfg: dict): # , trial: optuna.Trial
 #         num_val_workers=NUM_VAL_WORKERS
 #     )
 
-
-@hydra.main(config_path="configs/hydra", config_name="experiments/bboxBackbone/run_1", version_base=None)
+@hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
 def run_optuna(cfg: DictConfig):
     cfg = OmegaConf.to_container(cfg, resolve=True)
-    cfg = cfg["experiments"]["bboxBackbone"]
+    
+    import pprint
+    
+    print(cfg.keys())
+    pprint.PrettyPrinter(indent=2).pprint(cfg)
+    
+    if not cfg["experiment"]["experimentName"]:
+        print("!! please select experiment")
+        exit()
+    
+    logger_cfg = cfg["logger"]
+    checkpointCallback_cfg = cfg["checkpointCallback"]
+    experiment_cfg = cfg["experiment"]
     
     # seed everything
-    pl.seed_everything(cfg["randomSeed"])
+    pl.seed_everything(experiment_cfg["randomSeed"])
     
-    # parse attributes from local imports 
-    cfg["modelTraining"]["loss_fn"] = getattr(T.nn.functional, cfg["modelTraining"]["loss_fn"])
-    cfg["modelTraining"]["optimizer"] = getattr(T.optim, cfg["modelTraining"]["optimizer"])
-    cfg["modelTraining"]["lr_scheduler"] = getattr(T.optim.lr_scheduler, cfg["modelTraining"]["lr_scheduler"])
-    cfg["dataset"]["dataset_class"] = getattr(datasets, cfg["dataset"]["dataset_class"])
-    cfg["dataset"]["image_pertubator"] = preprocessing.ImagePertubators[cfg["dataset"]["image_pertubator"]]
+    # parse str attributes as python attributes
+    experiment_cfg["modelTraining"]["loss_fn"] = getattr(T.nn.functional, experiment_cfg["modelTraining"]["loss_fn"])
+    experiment_cfg["modelTraining"]["optimizer"] = getattr(T.optim, experiment_cfg["modelTraining"]["optimizer"])
+    experiment_cfg["modelTraining"]["lr_scheduler"] = getattr(T.optim.lr_scheduler, experiment_cfg["modelTraining"]["lr_scheduler"])
+    experiment_cfg["dataset"]["dataset_class"] = getattr(datasets, experiment_cfg["dataset"]["dataset_class"])
+    experiment_cfg["dataset"]["image_pertubator"] = preprocessing.ImagePertubators[experiment_cfg["dataset"]["image_pertubator"]]
     
-    print(cfg)
     
-    # create optuna study
-    study = optuna.create_study(direction="minimize")
+    # # create optuna study
+    # study = optuna.create_study(direction="minimize")
     
 
 

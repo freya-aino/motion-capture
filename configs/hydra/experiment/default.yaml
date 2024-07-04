@@ -1,0 +1,6 @@
+experimentName: null
+runName: null
+batchSize: 32
+continueTraining: false
+device: "cuda:0"
+randomSeed: 0

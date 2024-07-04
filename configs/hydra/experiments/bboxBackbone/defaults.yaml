@@ -1,9 +1,0 @@
-imageShapeWH: (448, 448)
-outputSize: 4
-outputLength: 32
-
-batchSize: 32
-continueTraining: false
-modelCheckpointPath: "checkpoints/"
-device: "cuda:0"
-randomSeed: 0

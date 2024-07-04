@@ -1,3 +1,4 @@
+dirpatch: "checkpoints/${experiment.experimentName}/${experiment.runName}"
 save_top_k: 3,
 every_n_epochs: 1
 monitor: "val_loss"

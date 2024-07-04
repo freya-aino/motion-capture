@@ -1,3 +1,4 @@
+experiment_name: ${experiment.experimentName}
+run_name: ${experiment.runName}
 save_dir: "logs/"
 tracking_uri: ~
-tags: ["bbox", "backbone"]

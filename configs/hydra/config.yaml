@@ -1,0 +1,5 @@
+defaults:
+  - /experiment: bboxBackbone/experiment_1
+  - /logger: mlflow
+  - /checkpointCallback: top3min
+  - _self_
