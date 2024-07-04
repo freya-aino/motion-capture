@@ -1,0 +1,11 @@
+dataset_class: "WFLWDataset"
+dataset_kwargs:
+  - output_full_image_shape_WH: (448, 448)
+  - output_face_image_shape_WH: (16, 16)
+  - max_number_of_faces: 32
+  - image_path: "//192.168.2.206/data/datasets/WFLW/images"
+  - annotation_path: "//192.168.2.206/data/datasets/WFLW/annotations"
+  - padding: "random_elements"
+image_key: fullImage
+bbox_key: faceBboxes
+image_pertubator: "BASIC"

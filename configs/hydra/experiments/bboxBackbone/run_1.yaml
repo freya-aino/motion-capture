@@ -1,0 +1,12 @@
+defaults:
+  - defaults
+  - /checkpointCallback: top3min
+  - /stochasticWeightAveraging: default
+  - /modelStructure: upsampleCrossAttention-s
+  - /modelTraining: l1AdamWLRScheduler
+  - /logger: mlflow
+  - /trainer: default
+  - /dataset: WFLWBbox-l
+  - _self_
+
+run_name: "run_1"

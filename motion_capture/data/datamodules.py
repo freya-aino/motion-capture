@@ -4,9 +4,6 @@ import torch as T
 import torch.utils.data as Tdata
 import pytorch_lightning as pl
 
-from .datasets import WFLWDataset
-
-
 
 class BboxDataModule(pl.LightningDataModule):
     
@@ -14,6 +11,7 @@ class BboxDataModule(pl.LightningDataModule):
         self, 
         dataset_class: Tdata.Dataset,
         dataset_kwargs: dict,
+        image_pertubator,
         image_key: str,
         image_shape: tuple[int, int], # width, height
         bbox_key: str,
@@ -25,6 +23,8 @@ class BboxDataModule(pl.LightningDataModule):
         super().__init__()
         self.dataset_class = dataset_class
         self.dataset_kwargs = dataset_kwargs
+        self.image_pertubator = image_pertubator
+        
         self.image_key = image_key
         self.image_shape = image_shape
         self.bbox_key = bbox_key
@@ -47,8 +47,9 @@ class BboxDataModule(pl.LightningDataModule):
         batch = [b for b in batch if b is not None]
         if len(batch) == 0:
             return None
-        x = T.stack([b[self.image_key] / 255 for b in batch])
-        y = T.stack([(b[self.bbox_key] / T.tensor([self.output_full_image_shape] * 2)).flatten(-2) for b in batch])
+        
+        x = T.stack([self.image_pertubator(b[self.image_key]) / 255 for b in batch]).to(dtype=T.float32)
+        y = T.stack([(b[self.bbox_key] / T.tensor([self.output_full_image_shape] * 2)).flatten(-2) for b in batch]).to(dtype=T.float32)
         return x, y
     
     def train_dataloader(self):

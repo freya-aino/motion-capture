@@ -18,11 +18,8 @@ import torchvision.transforms as image_transforms
 
 # also look at albumenations https://github.com/albumentations-team/albumentations
 
-class ImagePertubators:
-    
-    @staticmethod
-    def BASIC():
-        return image_transforms.RandomChoice([
+ImagePertubators = {
+    "BASIC": image_transforms.RandomChoice([
             image_transforms.AugMix(),
             
             image_transforms.RandomChoice([
@@ -39,13 +36,11 @@ class ImagePertubators:
                 image_transforms.GaussianBlur(101),
             ]),
             
-        ])
-        
-    @staticmethod
-    def AllThePapers():
-        return image_transforms.RandomChoice([
+        ]),
+    "AllThePapers": image_transforms.RandomChoice([
             image_transforms.AugMix(),
             image_transforms.AutoAugment(),
             image_transforms.RandAugment(),
         ])
+}
 

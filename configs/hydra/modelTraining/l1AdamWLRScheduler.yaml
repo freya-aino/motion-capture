@@ -1,0 +1,11 @@
+
+loss_fn: "l1_loss"
+optimizer: "AdamW"
+optimizer_kwargs: 
+  - lr: 1e-04
+  - weight_decay: 0.005
+lr_scheduler: "CosineAnnealingLR"
+lr_scheduler_kwargs:
+  - T_max: 10
+  - eta_min: 1e-06
+  - last_epoch: -1

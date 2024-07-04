@@ -1,0 +1,4 @@
+backbone_output_size: 512
+neck_output_size: 256
+head_latent_size: 256
+depth_multiple: 1

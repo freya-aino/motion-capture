@@ -83,16 +83,13 @@ class WIDERFaceDataset(data.Dataset):
         max_number_of_faces: int,
         train_path: str, 
         val_path: str,
-        center_bbox: bool = True,
-        image_pertubator = None):
+        center_bbox: bool = True):
         
         super(type(self), self).__init__()
         
         self.output_image_shape = output_image_shape_WH
         self.max_number_of_faces = max_number_of_faces
         self.center_bbox = center_bbox
-        
-        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
         
         
         train_annotations = self.extract_formated_datapoints(
@@ -120,7 +117,6 @@ class WIDERFaceDataset(data.Dataset):
         
         datapoint = self.annotation_datapoints[idx]
         image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB)
-        image = self.image_pertubator(image).to(dtype=T.float32)
         
         # get bounding boxes and scale them
         bboxes = []
@@ -194,14 +190,12 @@ class WFLWDataset(data.Dataset):
         image_path: str,
         annotation_path: str,
         max_number_of_faces: int,
-        image_pertubator = None,
         padding = "zeros",
         center_bbox: bool = True):
         
         super(type(self), self).__init__()
         
         self.center_bbox = center_bbox
-        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
         self.max_number_of_faces = max_number_of_faces
         
         self.output_full_image_shape = output_full_image_shape_WH
@@ -261,7 +255,6 @@ class WFLWDataset(data.Dataset):
             
             # scale face crop and add pertubation
             face_image = resize(face_image, self.output_face_image_shape[::-1], antialias=True)
-            face_image = self.image_pertubator(face_image).to(T.float32)
             
             face_images.append(face_image)
             face_bboxes.append(bbox)
@@ -286,19 +279,19 @@ class WFLWDataset(data.Dataset):
                 all_local_scale_keypoints.append(all_local_scale_keypoints[rand_idx])
                 all_indicators.append(all_indicators[rand_idx])
         
-        # stack all bounding boxes and padd
-        face_images = T.stack(face_images)
-        face_bboxes = T.stack(face_bboxes)
-        all_full_scale_keypoints = T.stack(all_full_scale_keypoints)
-        all_local_scale_keypoints = T.stack(all_local_scale_keypoints)
-        all_indicators = T.stack(all_indicators)
+        # stack all and shuffle
+        random_order_selection = T.randperm(self.max_number_of_faces)
+        face_images = T.stack(face_images)[random_order_selection]
+        face_bboxes = T.stack(face_bboxes)[random_order_selection]
+        all_full_scale_keypoints = T.stack(all_full_scale_keypoints)[random_order_selection]
+        all_local_scale_keypoints = T.stack(all_local_scale_keypoints)[random_order_selection]
+        all_indicators = T.stack(all_indicators)[random_order_selection]
         
         face_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
         face_validity[:len(datapoints)] = True
         
         # resize full image
         full_image = resize(full_image, self.output_full_image_shape[::-1], antialias=True)
-        full_image = self.image_pertubator(full_image).to(T.float32)
         
         return {
             "fullImage": full_image,
@@ -625,7 +618,6 @@ class COCO2017PanopticsDataset(data.Dataset):
         output_image_shape_WH: tuple,
         instance_images_output_shape_WH: tuple,
         max_number_of_instances: int = 10,
-        image_pertubator = None,
         center_bbox: bool = True,
         load_segmentation_masks: bool = True,
         limit_to_first_n = None):
@@ -641,7 +633,6 @@ class COCO2017PanopticsDataset(data.Dataset):
         self.center_bbox = center_bbox
         self.load_segmentation_masks = load_segmentation_masks
         
-        self.image_pertubator = image_pertubator if image_pertubator else lambda x: x
         
         
         val_path = os.path.join(panoptics_path, "panoptic_val2017.json")
@@ -711,8 +702,7 @@ class COCO2017PanopticsDataset(data.Dataset):
             return None
         
         image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB)
-        image = self.image_pertubator(image).to(dtype=T.float32)
-        segmentation_mask = read_image(datapoint["segmentationImagePath"]).to(dtype=T.float32)
+        segmentation_mask = read_image(datapoint["segmentationImagePath"])
         
         bboxes = []
         categories = []
@@ -769,7 +759,6 @@ class COCO2017PanopticsDataset(data.Dataset):
             return None
         
         image = read_image(datapoint["originalImagePath"], mode=ImageReadMode.RGB)
-        image = self.image_pertubator(image).to(dtype=T.float32)
         
         bboxes = []
         categories = []
