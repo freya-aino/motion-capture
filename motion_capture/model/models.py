@@ -88,10 +88,10 @@ class UpsampleCrossAttentionNetwork(pl.LightningModule):
     
     def configure_optimizers(self):
         
-        assert self.optimizer, "optimizer not set for training"
+        assert self.hparams.optimizer, "optimizer not set for training"
         
-        opt = self.optimizer(self.parameters(), **self.hparams.optimizer_kwargs)
-        lr_scheduler = self.lr_scheduler(opt, **self.hparams.lr_scheduler_kwargs) if self.lr_scheduler else None
+        opt = self.hparams.optimizer(self.parameters(), **self.hparams.optimizer_kwargs)
+        lr_scheduler = self.hparams.lr_scheduler(opt, **self.hparams.lr_scheduler_kwargs)
         
         return {
             "optimizer": opt,

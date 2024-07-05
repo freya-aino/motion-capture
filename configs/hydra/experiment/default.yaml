@@ -1,6 +1,11 @@
 experimentName: null
 runName: null
-batchSize: 32
-continueTraining: false
-device: "cuda:0"
+
+device: "cuda"
 randomSeed: 0
+continueTraining: false
+
+numTrainWorkers: 8
+numValWorkers: 4
+trainValTestSplit: [0.8, 0.15, 0.05]
+batchSize: 32

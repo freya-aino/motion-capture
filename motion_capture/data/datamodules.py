@@ -33,14 +33,16 @@ class BboxDataModule(pl.LightningDataModule):
         self.num_train_workers = num_train_workers
         self.num_val_workers = num_val_workers
         
-        self.generator = T.Generator()
         
     def setup(self, stage=None):
         # Setup your dataset(s) for training, validation, test
+        dataset = self.dataset_class(**self.dataset_kwargs)
+        # lengths = [int(len(dataset) * split) for split in self.train_val_test_split]
+        # lengths[0] += len(dataset) - sum(lengths)
         self.train_dataset, self.val_dataset, self.test_dataset = Tdata.random_split(
-            dataset = self.dataset_class(**self.dataset_kwargs),
+            dataset = dataset, 
             lengths = self.train_val_test_split,
-            generator = self.generator
+            # generator = self.generator
         )
         
     def collate_fn(self, batch):
@@ -49,34 +51,39 @@ class BboxDataModule(pl.LightningDataModule):
             return None
         
         x = T.stack([self.image_pertubator(b[self.image_key]) / 255 for b in batch]).to(dtype=T.float32)
-        y = T.stack([(b[self.bbox_key] / T.tensor([self.output_full_image_shape] * 2)).flatten(-2) for b in batch]).to(dtype=T.float32)
+        y = T.stack([(b[self.bbox_key] / T.tensor([self.image_shape] * 2)).flatten(-2) for b in batch]).to(dtype=T.float32)
         return x, y
     
     def train_dataloader(self):
         return Tdata.DataLoader(
-            self.train_dataloader, 
+            self.train_dataset, 
             batch_size=self.batch_size, 
             collate_fn=self.collate_fn,
             shuffle=True,
             num_workers=self.num_train_workers,
-            generator = self.generator
+            persistent_workers=True,
+            # generator = self.generator,
+            pin_memory=True
         )
     
     def val_dataloader(self):
         return Tdata.DataLoader(
-            self.val_dataloader, 
+            self.val_dataset, 
             batch_size=self.batch_size, 
             collate_fn=self.collate_fn,
             shuffle=False,
             num_workers=self.num_val_workers,
-            generator = self.generator
+            persistent_workers=True,
+            # generator = self.generator,
+            pin_memory=True
         )
     
     def test_dataloader(self):
         return Tdata.DataLoader(
-            self.test_dataloader, 
+            self.test_dataset, 
             batch_size=self.batch_size, 
             collate_fn=self.collate_fn,
             shuffle=False,
-            generator = self.generator
+            # generator = self.generator,
+            pin_memory=True
         )

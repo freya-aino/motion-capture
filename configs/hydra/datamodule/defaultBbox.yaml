@@ -1,0 +1,5 @@
+num_train_workers: ${experiment.numTrainWorkers}
+num_val_workers: ${experiment.numValWorkers}
+train_val_test_split: ${experiment.trainValTestSplit}
+batch_size: ${experiment.batchSize}
+image_shape: ${experiment.imageShapeWH}

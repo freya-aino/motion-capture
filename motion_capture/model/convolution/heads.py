@@ -12,20 +12,19 @@ class SelfAttentionHead(nn.Module):
         input_size,
         output_size,
         output_length,
-        latent_size = 1024):
+        latent_size):
         
         super(type(self), self).__init__()
+        
+        self.output_length = output_length
         
         self.input_1d_conv = nn.Sequential(
             nn.Conv1d(input_size, latent_size, kernel_size=1, stride=1, padding=0, groups=1),
             nn.SiLU(),
             nn.BatchNorm1d(latent_size)
         )
-        
         self.positional_embedding = nn.Parameter(positional_embedding(20*20, latent_size), requires_grad=False)
-        
         self.self_attention = TransformerEncoderBlock(latent_size, output_size)
-        
         self.internal_state = nn.Parameter(T.rand(output_length, latent_size, dtype=T.float32), requires_grad=True)
         
     def forward(self, x: T.Tensor) -> T.Tensor:
