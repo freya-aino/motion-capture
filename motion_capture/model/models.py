@@ -11,23 +11,31 @@ from .SAM.sam import SAM
 from .SAM.example.utility.bypass_bn import enable_running_stats, disable_running_stats
 
 
-def find_best_checkpoint_path(checkpoint_dir, pattern="*.ckpt"):
+def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.ckpt"):
     from glob import glob
     import re
     
     files = glob(os.path.join(checkpoint_dir, pattern))
     
+    if len(files) == 0:
+        return None
+    
+    all_models = []
     for file in files:
         ckpt = T.load(file, map_location=T.device("cpu"))
-        # file["epoch"], file["global_step"] #todo: add return by epoch
-        
         for key, val in ckpt.get("callbacks", {}).items():
             if key.startswith("ModelCheckpoint"):
-                print(f"found best model with loss: {val['best_model_score']} from {val['best_model_path']}")
-                return val["best_model_path"]
+                all_models.append({
+                    "model_path": val["best_model_path"],
+                    "model_score": val["best_model_score"]
+                })
+    if min_loss:
+        best_model = min(all_models, key=lambda x: x["model_score"])
+    else:
+        best_model = max(all_models, key=lambda x: x["model_score"])
     
-    print(f"no best model found in {checkpoint_dir}")
-    return None
+    print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
+    return best_model["model_path"]
 
 class UpsampleCrossAttentionNetwork(pl.LightningModule):
 
@@ -77,14 +85,21 @@ class UpsampleCrossAttentionNetwork(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         train_loss = self.hparams.loss_fn(self(x), y)
-        self.log("train_loss", train_loss)
+        self.log("train_loss", train_loss, on_step=True, on_epoch=False, prog_bar=True)
         return train_loss
-
+    
     def validation_step(self, batch, batch_idx):
         x, y = batch
         val_loss = self.hparams.loss_fn(self(x), y)
         self.log("val_loss", val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        # self.log_param_variances()
         return val_loss
+    
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        test_loss = self.hparams.loss_fn(self(x), y)
+        self.log("test_loss", test_loss, on_step=False, on_epoch=True, prog_bar=True)
+        return test_loss
     
     def configure_optimizers(self):
         
@@ -97,3 +112,9 @@ class UpsampleCrossAttentionNetwork(pl.LightningModule):
             "optimizer": opt,
             "lr_scheduler": lr_scheduler
         }
+    
+    def log_param_variances(self):
+        for name, param in self.named_parameters():
+            if "weight" in name:  # Filter to log variance of weights only
+                variance = T.var(param).item()
+                self.log(f"{name}_variance", variance, on_epoch=True, on_step=False, prog_bar=False)

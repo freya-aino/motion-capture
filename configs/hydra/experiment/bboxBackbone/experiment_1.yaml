@@ -1,19 +1,41 @@
 defaults:
   - default
-  - /stochasticWeightAveraging: default
-  - /modelStructure: upsampleCrossAttention-s
-  - /modelTraining: l1AdamWLRScheduler
-  - /trainer: veryShortTraining
-  - /datamodule: WFLWBbox
+  - /model: upsample_cross_attention-s
+  - /data: WFLW-bbox
 
 # overrides
 experimentName: "bboxBackbone"
-runName: "run-1"
-batch_size: 8
-numTrainWorkers: 8
-numValWorkers: 2
+runName: "UpsampleAtt-WFLW"
+numTrainWorkers: 12
+numValWorkers: 6
+batchSize: 64
 
-# new
+continue_training: false
+
 imageShapeWH: [224, 224]
 outputSize: 4
-outputLength: 32
+outputLength: 16
+
+trainer:
+  max_epochs: 500
+  accumulate_grad_batches: 5
+  gradient_clip_algorithm: "norm"
+  gradient_clip_val: 0.2
+
+model_training:
+  loss_fn: "l1_loss"
+  optimizer: "AdamW"
+  optimizer_kwargs: 
+    lr: 1e-4
+    weight_decay: 1e-3
+  lr_scheduler: "CosineAnnealingLR"
+  lr_scheduler_kwargs:
+    T_max: 50
+    eta_min: 1e-05
+    last_epoch: -1
+
+stochastic_weight_averaging:
+  swa_lrs: 1e-06
+  swa_epoch_start: 350
+  annealing_epochs: 150
+  annealing_strategy: "cos"

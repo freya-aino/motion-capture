@@ -1,4 +1,0 @@
-swa_lrs: [1e-05, 1e-03]
-swa_epoch_start: 5
-annealing_epochs: [5, 25]
-annealing_strategy: "cos"

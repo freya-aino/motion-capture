@@ -13,6 +13,7 @@ import numpy as np
 import torch as T
 import torchvision.transforms as TVTransform
 
+from copy import deepcopy
 from torch.utils import data
 from torchvision.transforms.functional import resize, crop
 from torchvision.io import read_image, ImageReadMode
@@ -74,8 +75,6 @@ def center_bbox(bbox: T.Tensor) -> T.Tensor:
 
 # ------------------------------------------------------------------------
 
-
-
 class WIDERFaceDataset(data.Dataset):
     
     def __init__(self,
@@ -83,6 +82,7 @@ class WIDERFaceDataset(data.Dataset):
         max_number_of_faces: int,
         train_path: str, 
         val_path: str,
+        padding: str = "random_elements",
         center_bbox: bool = True):
         
         super(type(self), self).__init__()
@@ -90,7 +90,7 @@ class WIDERFaceDataset(data.Dataset):
         self.output_image_shape = output_image_shape_WH
         self.max_number_of_faces = max_number_of_faces
         self.center_bbox = center_bbox
-        
+        self.padding = padding
         
         train_annotations = self.extract_formated_datapoints(
             anno_file_path=os.path.join(train_path, "train_bbx_gt.txt"),
@@ -100,13 +100,13 @@ class WIDERFaceDataset(data.Dataset):
             anno_file_path=os.path.join(val_path, "val_bbx_gt.txt"),
             image_file_path=os.path.join(val_path, "images")
         )
-        self.annotation_datapoints = [*train_annotations, *val_annotations]
+        self.annotation_datapoints = deepcopy([*train_annotations, *val_annotations])
     
-    def collate_fn_bbox(self, batch):
-        x = T.stack([b["image"] / 255 for b in batch])
-        y = T.stack([(b["faceBbox"] / T.tensor(self.output_image_shape)).flatten(-2) for b in batch])
-        v = T.stack([b["bboxValidity"] for b in batch])
-        return x, y, v
+    # def collate_fn_bbox(self, batch):
+    #     x = T.stack([b["image"] / 255 for b in batch])
+    #     y = T.stack([(b["faceBbox"] / T.tensor(self.output_image_shape)).flatten(-2) for b in batch])
+    #     v = T.stack([b["bboxValidity"] for b in batch])
+    #     return x, y, v
     
     def __len__(self):
         return len(self.annotation_datapoints)
@@ -131,11 +131,15 @@ class WIDERFaceDataset(data.Dataset):
             bboxes.append(bbox)
         
         # pad bboxes if there are less than max_number_of_faces
-        padding = [T.zeros((2, 2), dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
+        if self.padding == "zeros":
+            padding = [T.zeros((2, 2), dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
+        elif self.padding == "random_elements":
+            padding = [bboxes[random.randint(0, len(bboxes) - 1)] for _ in range(self.max_number_of_faces - len(bboxes))]
+        
         bboxes = T.stack([*bboxes, *padding], dim=0)
         
-        bbox_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
-        bbox_validity[:len(bboxes)] = True
+        # bbox_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
+        # bbox_validity[:len(bboxes)] = True
         
         # resize image
         image = resize(image, self.output_image_shape[::-1], antialias=True)
@@ -143,7 +147,7 @@ class WIDERFaceDataset(data.Dataset):
         return {
             "image": image,
             "faceBbox": bboxes,
-            "bboxValidity": bbox_validity
+            # "bboxValidity": bbox_validity
         }
     
     def extract_formated_datapoints(self, anno_file_path: str, image_file_path: str):
@@ -181,31 +185,20 @@ class WIDERFaceDataset(data.Dataset):
                 })
         return formated_datapoints
 
-class WFLWDataset(data.Dataset):
-    
-    def __init__(
-        self,
-        output_full_image_shape_WH: tuple,
-        output_face_image_shape_WH: tuple,
-        image_path: str,
-        annotation_path: str,
-        max_number_of_faces: int,
-        padding = "zeros",
-        center_bbox: bool = True):
-        
+class WFLWFaceDetection(data.Dataset):
+    def __init__(self, image_shape_WH: tuple, path: str, max_number_of_faces: int, padding = "random_elements", center_bbox: bool = True):
         super(type(self), self).__init__()
         
         self.center_bbox = center_bbox
         self.max_number_of_faces = max_number_of_faces
-        
-        self.output_full_image_shape = output_full_image_shape_WH
-        self.output_face_image_shape = output_face_image_shape_WH
-        
-        self.image_folder_path = image_path
+        self.image_shape = image_shape_WH
+        self.image_folder_path = os.path.join(path, "images")
         self.padding = padding
         
-        train_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "train.txt"))
-        validation_datapoints = self.extract_formatted_datapoints(os.path.join(annotation_path, "validation.txt"))
+        with open(os.path.join(path, "annotations", "train.txt")) as f:
+            train_datapoints = self.extract_formatted_datapoints(f.readlines())
+        with open(os.path.join(path, "annotations", "validation.txt")) as f:
+            validation_datapoints = self.extract_formatted_datapoints(f.readlines())
         
         all_datapoints = [*train_datapoints, *validation_datapoints]
         
@@ -216,92 +209,95 @@ class WFLWDataset(data.Dataset):
                 all_datapoints_by_image[dp["imagePath"]] = []
             all_datapoints_by_image[dp["imagePath"]].append(dp)
         
-        self.all_datapoints = list(all_datapoints_by_image.values())
+        self.all_datapoints = deepcopy(list(all_datapoints_by_image.values()))
+    
+    def extract_formatted_datapoints(self, raw_lines: list):
+        individual_datapoints = []
+        for l in raw_lines:
+            line = l.split(" ")
+            bbox = [int(ell) for ell in line[196:200]]
+            bbox = [bbox[0], bbox[1], (bbox[2] - bbox[0]), (bbox[3] - bbox[1])]
+            individual_datapoints.append({
+                "imagePath": os.path.join(self.image_folder_path, line[-1])[:-1],
+                "bbox": T.tensor(bbox, dtype=T.int16).reshape(2, 2)
+            })
+        return individual_datapoints
+    
+    def __len__(self):
+        return (len(self.all_datapoints))
+    
+    def __getitem__(self, idx):
+        datapoints = self.all_datapoints[idx][:self.max_number_of_faces]
+        
+        if len(datapoints) == 0:
+            return None
+        
+        full_image = read_image(datapoints[0]["imagePath"], mode=ImageReadMode.RGB)
+        
+        bboxes = []
+        for datapoint in datapoints:
+            bbox = scale_points(datapoint["bbox"], full_image.shape[::-1][:2], self.image_shape).to(dtype=T.float32)
+            # create center bounding boxes
+            if self.center_bbox:
+                bbox = center_bbox(bbox)
+            bboxes.append(bbox)
+        
+        # resize full image
+        full_image = resize(full_image, self.image_shape[::-1], antialias=True)
+        
+        
+        if self.padding == "zeros":
+            padding = [T.zeros((2, 2), dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
+        elif self.padding == "random_elements":
+            padding = [bboxes[random.randint(0, len(bboxes) - 1)] for _ in range(self.max_number_of_faces - len(bboxes))]
+        
+        # stack all and shuffle
+        face_bboxes = T.stack([*bboxes, *padding])[T.randperm(self.max_number_of_faces)]
+        face_bboxes = face_bboxes.reshape(self.max_number_of_faces, 4)
+        
+        return full_image, face_bboxes
+
+class WFLWFaceKeypointDetection(data.Dataset):
+    def __init__(self, image_shape_WH: tuple, path: str):
+        super(type(self), self).__init__()
+        
+        self.image_shape = image_shape_WH
+        self.image_folder_path = os.path.join(path, "images")
+        
+        with open(os.path.join(path, "annotations", "train.txt")) as f:
+            train_datapoints = self.extract_formatted_datapoints(f.readline())
+        with open(os.path.join(path, "annotations", "validation.txt")) as f:
+            validation_datapoints = self.extract_formatted_datapoints(f.readline())
+        
+        all_datapoints = [*train_datapoints, *validation_datapoints]
+        
+        self.all_datapoints = deepcopy(all_datapoints)
+        
+        # # group datapoints by image path
+        # all_datapoints_by_image = {}
+        # for dp in all_datapoints:
+        #     if dp["imagePath"] not in all_datapoints_by_image:
+        #         all_datapoints_by_image[dp["imagePath"]] = []
+        #     all_datapoints_by_image[dp["imagePath"]].append(dp)
+        
+        # self.all_datapoints = deepcopy(list(all_datapoints_by_image.values()))
     
     def __len__(self):
         return (len(self.all_datapoints))
     
     def __getitem__(self, idx):
         
-        datapoints = self.all_datapoints[idx][:self.max_number_of_faces]
+        datapoint = self.all_datapoints[idx]
+        full_image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB)
+        bbox = datapoint["bbox"]
+        keypoints = datapoint["keypoints"]
+        indicators = datapoint["indicators"]
         
-        if len(datapoints) == 0:
-            return None
+        face_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+        scaled_keypoints = scale_points(keypoints - bbox[0], face_image.shape[::-1][:2], self.image_shape)
+        face_image = resize(face_image, self.image_shape[::-1], antialias=True)
         
-        face_images = []
-        face_bboxes = []
-        all_full_scale_keypoints = []
-        all_local_scale_keypoints = []
-        all_indicators = []
-        
-        full_image = read_image(datapoints[0]["imagePath"], mode=ImageReadMode.RGB)
-        
-        for datapoint in datapoints:
-            keypoints = datapoint["keypoints"]
-            indicators = datapoint["indicators"]
-            bbox = datapoint["faceBbox"]
-            
-            # create face crop and scale keypoints to face crop
-            face_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
-            local_scaled_keypoints = scale_points(keypoints - bbox[0], face_image.shape[::-1][:2], self.output_face_image_shape)
-            
-            # global keypoint and bbx scaling
-            full_scaled_keypoints = scale_points(keypoints, full_image.shape[::-1][:2], self.output_full_image_shape)
-            bbox = scale_points(bbox, full_image.shape[::-1][:2], self.output_full_image_shape).to(dtype=T.int16)
-            
-            # create center bounding boxes
-            if self.center_bbox:
-                bbox = center_bbox(bbox)
-            
-            # scale face crop and add pertubation
-            face_image = resize(face_image, self.output_face_image_shape[::-1], antialias=True)
-            
-            face_images.append(face_image)
-            face_bboxes.append(bbox)
-            all_full_scale_keypoints.append(full_scaled_keypoints)
-            all_local_scale_keypoints.append(local_scaled_keypoints)
-            all_indicators.append(indicators)
-        
-        if self.padding == "zeros":
-            # pad zeros
-            for i in range(max(0, self.max_number_of_faces - len(datapoints))):
-                face_images.append(T.zeros_like(face_images[0]))
-                face_bboxes.append(T.zeros_like(face_bboxes[0]))
-                all_full_scale_keypoints.append(T.zeros_like(all_full_scale_keypoints[0]))
-                all_local_scale_keypoints.append(T.zeros_like(all_local_scale_keypoints[0]))
-                all_indicators.append(T.zeros_like(all_indicators[0]))
-        elif self.padding == "random_elements":
-            for i in range(max(0, self.max_number_of_faces - len(datapoints))):
-                rand_idx = random.randint(0, len(datapoints) - 1)
-                face_images.append(face_images[rand_idx])
-                face_bboxes.append(face_bboxes[rand_idx])
-                all_full_scale_keypoints.append(all_full_scale_keypoints[rand_idx])
-                all_local_scale_keypoints.append(all_local_scale_keypoints[rand_idx])
-                all_indicators.append(all_indicators[rand_idx])
-        
-        # stack all and shuffle
-        random_order_selection = T.randperm(self.max_number_of_faces)
-        face_images = T.stack(face_images)[random_order_selection]
-        face_bboxes = T.stack(face_bboxes)[random_order_selection]
-        all_full_scale_keypoints = T.stack(all_full_scale_keypoints)[random_order_selection]
-        all_local_scale_keypoints = T.stack(all_local_scale_keypoints)[random_order_selection]
-        all_indicators = T.stack(all_indicators)[random_order_selection]
-        
-        face_validity = T.zeros(self.max_number_of_faces, dtype=T.bool)
-        face_validity[:len(datapoints)] = True
-        
-        # resize full image
-        full_image = resize(full_image, self.output_full_image_shape[::-1], antialias=True)
-        
-        return {
-            "fullImage": full_image,
-            "faceBboxes": face_bboxes,
-            "faceValidity": face_validity,
-            "faceImages": face_images, # in format [Channels, Height, Width]
-            "globalKeypoints": all_full_scale_keypoints, # in format [Width, Height] in image size
-            "localKeypoints": all_local_scale_keypoints, # in format [Width, Height] in face crop size
-            "indicators": indicators
-        }
+        return face_image, scaled_keypoints, indicators
         
     def extract_formatted_datapoints(self, path):
         individual_datapoints = []
@@ -315,11 +311,12 @@ class WFLWDataset(data.Dataset):
                 individual_datapoints.append({
                     "imagePath": os.path.join(self.image_folder_path, line[-1])[:-1],
                     "keypoints": T.tensor([float(a) for a in line[:196]]).reshape(-1, 2),
-                    "faceBbox": T.tensor(bbox, dtype=T.int16).reshape(2, 2),
+                    "bbox": T.tensor(bbox, dtype=T.int16).reshape(2, 2),
                     "indicators": T.tensor([int(ell) for ell in line[200:206]])
                 })
         
         return individual_datapoints
+
 
 class COFWColorDataset(data.Dataset):
     def __init__(
