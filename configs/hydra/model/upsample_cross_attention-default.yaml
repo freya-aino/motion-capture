@@ -1,7 +1,0 @@
-model_class: UpsampleCrossAttentionNetwork
-output_size: ${experiment.outputSize}
-output_length: ${experiment.outputLength}
-backbone_output_size: 1024
-neck_output_size: 512
-head_latent_size: 512
-depth_multiple: 2

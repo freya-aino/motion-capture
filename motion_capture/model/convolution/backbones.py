@@ -53,5 +53,9 @@ class Backbone(nn.Module):
         x2 = self.batch_norm_x2(x2)
         x3 = self.batch_norm_x3(x3)
         
-        return x1, x2, x3
+        return {
+            "0": x1, 
+            "1": x2, 
+            "2": x3
+        }
 

@@ -4,11 +4,9 @@ import torch as T
 import torch.nn as nn
 import pytorch_lightning as pl
 
-from .convolution.backbones import Backbone
-from .convolution.necks import UpsampleCrossAttentionrNeck
-from .convolution.heads import SelfAttentionHead
-from .SAM.sam import SAM
-from .SAM.example.utility.bypass_bn import enable_running_stats, disable_running_stats
+from torchvision import models as torchModels
+
+from .heads import AttentionHead
 
 
 def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.ckpt"):
@@ -37,84 +35,82 @@ def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.
     print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
     return best_model["model_path"]
 
-class UpsampleCrossAttentionNetwork(pl.LightningModule):
+class MainModel(pl.LightningModule):
 
     def __init__(
         self,
         
-        # - model parameters
-        output_size: int,
-        output_length: int,
-        backbone_output_size: int,
-        neck_output_size: int,
-        head_latent_size: int,
-        depth_multiple: int,
+        heads: dict,
         
         # - training parameters
+        train_backbone: bool = None,
         optimizer: T.optim.Optimizer = None,
         optimizer_kwargs: dict = None,
+        lr_scheduler_warmup_epochs: int = None,
         lr_scheduler: T.optim.lr_scheduler = None,
         lr_scheduler_kwargs: dict = None,
         loss_fn = None,
-        ):
+        invalid_element_loss_scale = None):
         
         super().__init__()
         self.save_hyperparameters()
         # self.automatic_optimization = False
         
-        self.backbone = Backbone(output_channels=backbone_output_size, depth_multiple=depth_multiple)
-        self.neck = UpsampleCrossAttentionrNeck(output_size=neck_output_size, latent_size=backbone_output_size, depth_multiple=depth_multiple)
-        self.head = SelfAttentionHead(input_size=neck_output_size, output_size=output_size, output_length=output_length, latent_size=head_latent_size)
+        self.backbone = torchModels.convnext_tiny(weights=torchModels.ConvNeXt_Tiny_Weights.DEFAULT).features
+        self.heads = nn.ModuleDict({
+            k: AttentionHead(
+                input_size = 768, # base input size of convnext_tiny and convnext_small
+                output_size = heads[k]["output_size"], 
+                output_length= heads[k]["output_length"],
+                latent_size= heads[k]["latent_size"],
+                depth_multiple= heads[k]["depth_multiple"],
+            ) for k in heads
+        })
     
-    def new_head(self, new_output_size, new_output_length):
-        self.head = SelfAttentionHead(input_size=self.hparams.neck_output_size, output_size=new_output_size, output_length=new_output_length, latent_size=self.hparams.head_latent_size)
-    def replace_head(self, new_head: nn.Module):
-        self.head = new_head
-        
-    def new_neck(self, new_neck_output_size):
-        self.neck = UpsampleCrossAttentionrNeck(output_size=new_neck_output_size, latent_size=self.hparams.backbone_output_size, depth_multiple=self.hparams.depth_multiple)
-    def replace_neck(self, new_neck: nn.Module):
-        self.neck = new_neck
-        
     def forward(self, x: T.Tensor):
-        resnet_residuals = self.backbone(x)
-        neck_out = self.neck(*resnet_residuals)
-        head_out = self.head(neck_out)
-        return head_out
+        return self.head(self.backbone(x))
     
-    def training_step(self, batch, batch_idx):
+    def compute_loss(self, y_, y, loss_fn):
+        return loss_fn(y_, y)
+    
+    def head_wise_step(self, batch, mode):
+        
+        if self.hparams.train_backbone:
+            self.backbone.eval()
+        
         x, y = batch
-        train_loss = self.hparams.loss_fn(self(x), y)
-        self.log("train_loss", train_loss, on_step=True, on_epoch=False, prog_bar=True)
-        return train_loss
+        outputs = self(x)
+        losses = {}
+        for k, head_output in outputs.items():
+            loss = self.compute_loss(head_output, y[k], self.hparams.heads[k]["loss_fn"])
+            losses[k] = loss
+            self.log(f"{mode}_loss_{k}", loss, on_step=True, on_epoch=False, prog_bar=True)
+        self.log(f"{mode}_loss", sum(losses.values()) / len(losses), on_step=False, on_epoch=True, prog_bar=True)
+        return losses
     
+    
+    def training_step(self, batch, batch_id):
+        return self.head_wise_step(batch, "train")
     def validation_step(self, batch, batch_idx):
-        x, y = batch
-        val_loss = self.hparams.loss_fn(self(x), y)
-        self.log("val_loss", val_loss, on_step=False, on_epoch=True, prog_bar=True)
-        # self.log_param_variances()
-        return val_loss
-    
+        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], on_step=False, on_epoch=True, prog_bar=False)
+        return self.head_wise_step(batch, "val")
     def test_step(self, batch, batch_idx):
-        x, y = batch
-        test_loss = self.hparams.loss_fn(self(x), y)
-        self.log("test_loss", test_loss, on_step=False, on_epoch=True, prog_bar=True)
-        return test_loss
+        return self.head_wise_step(batch, "test")
     
     def configure_optimizers(self):
         
         assert self.hparams.optimizer, "optimizer not set for training"
         
         opt = self.hparams.optimizer(self.parameters(), **self.hparams.optimizer_kwargs)
-        lr_scheduler = self.hparams.lr_scheduler(opt, **self.hparams.lr_scheduler_kwargs)
+        
+        warmup_scheduler = T.optim.lr_scheduler.LinearLR(opt, start_factor=0.1, total_iters=self.hparams.lr_scheduler_warmup_epochs)
+        scheduler = self.hparams.lr_scheduler(opt, **self.hparams.lr_scheduler_kwargs)
+        lr_scheduler = T.optim.lr_scheduler.SequentialLR(opt, schedulers=[
+            warmup_scheduler, 
+            scheduler
+        ], milestones=[self.hparams.lr_scheduler_warmup_epochs])
         
         return {
             "optimizer": opt,
             "lr_scheduler": lr_scheduler
         }
-    
-    def log_param_variances(self):
-        for name, param in self.named_parameters():
-            if "weight" in name:  # Filter to log variance of weights only
-                variance = T.var(param).item()
-                self.log(f"{name}_variance", variance, on_epoch=True, on_step=False, prog_bar=False)

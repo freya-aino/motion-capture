@@ -123,8 +123,7 @@ class UpsampleCrossAttentionrNeck(nn.Module):
         self, 
         output_size,
         latent_size = 1024,
-        depth_multiple = 1,
-        positional_embedding_size: int = 256):
+        depth_multiple = 1):
         super(type(self), self).__init__()
         
         assert depth_multiple >= 1, "depth_multiple must be at least 1"
@@ -150,7 +149,7 @@ class UpsampleCrossAttentionrNeck(nn.Module):
         
         self.Q_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
         self.K_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
-        self.V_encoder = ConvBlock(codec_latent_size, codec_latent_size + positional_embedding_size, kernel_size=1, stride=1, padding=0)
+        self.V_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
         # nn.Sequential(
         #     ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0),
         #     C2f(codec_latent_size, codec_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=True),
@@ -159,12 +158,13 @@ class UpsampleCrossAttentionrNeck(nn.Module):
         #     ConvBlock(codec_latent_size, codec_latent_size + positional_embedding_size, kernel_size=1, stride=1, padding=0)
         # )
         
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, positional_embedding_size), requires_grad=False)
+        self.positional_embedding = nn.Parameter(positional_embedding(20*20, codec_latent_size), requires_grad=False)
         
-        self.output_1d_conv = nn.Conv1d(codec_latent_size + positional_embedding_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
+        self.output_1d_conv = nn.Conv1d(codec_latent_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
         
-    def forward(self, x1: T.Tensor, x2: T.Tensor, x3: T.Tensor) -> T.Tensor: 
+    def forward(self, x: list):
         # x1, x2, x3 in order: middle of the backbone to final layer output
+        x1, x2, x3 = x[-3:]
         
         y1 = T.cat([self.upsample_x2(x3), x2], 1)
         y1 = self.reverse1(y1)
@@ -176,10 +176,10 @@ class UpsampleCrossAttentionrNeck(nn.Module):
         y3 = self.reverse3(y3)
         
         Q = self.Q_encoder(y3).flatten(2).permute(0, 2, 1)
-        Q = T.cat([Q, self.positional_embedding[:Q.shape[1]].expand(Q.shape[0], -1, -1)], 2)
+        Q = Q + self.positional_embedding[:Q.shape[1]].expand(Q.shape[0], -1, -1)
         
         K = self.K_encoder(y3).flatten(2).permute(0, 2, 1)
-        K = T.cat([K, self.positional_embedding[:K.shape[1]].expand(K.shape[0], -1, -1)], 2)
+        K = K + self.positional_embedding[:K.shape[1]].expand(K.shape[0], -1, -1)
         
         V = self.V_encoder(x3).flatten(2).permute(0, 2, 1)
         

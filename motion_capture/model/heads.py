@@ -2,35 +2,39 @@ import math
 import torch as T
 import torch.nn as nn
 
-from ..transformer.core import TransformerEncoderBlock
+from .transformer.core import TransformerEncoderBlock
+from .convolution.core import SPPF
 from motion_capture.core.torchhelpers import positional_embedding
 
-
-class SelfAttentionHead(nn.Module):
+class AttentionHead(nn.Module):
     def __init__(
         self, 
         input_size,
         output_size,
         output_length,
-        latent_size):
+        latent_size,
+        depth_multiple: int = 1):
         
         super(type(self), self).__init__()
         
         self.output_length = output_length
         
-        self.input_1d_conv = nn.Sequential(
-            nn.Conv1d(input_size, latent_size, kernel_size=1, stride=1, padding=0, groups=1),
-            nn.SiLU(),
-            nn.BatchNorm1d(latent_size)
-        )
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, latent_size), requires_grad=False)
-        self.self_attention = TransformerEncoderBlock(latent_size, output_size)
-        self.internal_state = nn.Parameter(T.rand(output_length, latent_size, dtype=T.float32), requires_grad=True)
+        self.input_sppf = SPPF(input_size, latent_size)
+        self.positional_embedding = nn.Parameter(positional_embedding(400, latent_size), requires_grad=False)
+        self.internal_state = nn.Parameter(T.randn(output_length, latent_size, dtype=T.float32), requires_grad=True)
+        self.encoder = nn.Sequential(*[TransformerEncoderBlock(latent_size, latent_size) for _ in range(depth_multiple)], TransformerEncoderBlock(latent_size, output_size))
         
     def forward(self, x: T.Tensor) -> T.Tensor:
-        x = self.input_1d_conv(x).permute(0, 2, 1)
+        
+        x = self.input_sppf(x)
+        x = x.flatten(2)
+        x = x.permute(0, 2, 1)
+        
         x = T.cat([x, self.internal_state.expand(x.shape[0], -1, -1)], 1)
-        x = self.self_attention(x)
+        x = x + self.positional_embedding[:x.shape[1]].expand(x.shape[0], -1, -1)
+        
+        x = self.encoder(x)
+        
         return x[:, -self.output_length:, :]
 
 

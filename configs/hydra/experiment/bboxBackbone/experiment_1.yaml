@@ -1,41 +1,45 @@
 defaults:
   - default
-  - /model: upsample_cross_attention-s
-  - /data: WFLW-bbox
+  - /model: main-model
+  - /data: face-bbox
 
 # overrides
-experimentName: "bboxBackbone"
-runName: "UpsampleAtt-WFLW"
-numTrainWorkers: 12
-numValWorkers: 6
-batchSize: 64
+experimentName: "bboxFinetune"
+runName: "run-1"
 
 continue_training: false
 
-imageShapeWH: [224, 224]
-outputSize: 4
-outputLength: 16
+imageShapeWH: [448, 448]
+numFaces: 3
+headLatentSize: 512
+headDepthMultiple: 3
+
+datamodule:
+  class: "BboxDataModule"
+  image_augmentation: "BASIC"
+  image_shape: ${experiment.imageShapeWH}
+  batch_size: 32
+  train_val_test_split: [0.8, 0.15, 0.05]
+  num_train_workers: 12
+  num_val_workers: 8
+  pre_load_dataset: false
 
 trainer:
-  max_epochs: 500
+  max_epochs: 100
   accumulate_grad_batches: 5
   gradient_clip_algorithm: "norm"
-  gradient_clip_val: 0.2
+  gradient_clip_val: 1
 
 model_training:
+  train_backbone: false
   loss_fn: "l1_loss"
   optimizer: "AdamW"
   optimizer_kwargs: 
-    lr: 1e-4
-    weight_decay: 1e-3
-  lr_scheduler: "CosineAnnealingLR"
+    lr: 4e-3
+    weight_decay: 6e-4
+  lr_scheduler_warmup_epochs: 5
+  lr_scheduler: "CosineAnnealingWarmRestarts"
   lr_scheduler_kwargs:
-    T_max: 50
-    eta_min: 1e-05
-    last_epoch: -1
-
-stochastic_weight_averaging:
-  swa_lrs: 1e-06
-  swa_epoch_start: 350
-  annealing_epochs: 150
-  annealing_strategy: "cos"
+    T_0: 50 # Number of iterations for the first restart.
+    T_mult: 1 # A factor increases T_{i} after a restart. Default: 1.
+    eta_min: 1e-5 # Minimum learning rate. Default: 0.

@@ -1,24 +1,8 @@
 import torchvision.transforms as image_transforms
 
-# -------------- TRANSMUTE DATA --------------
-
-# flip image
-# flip / rotate image
-
-# remove croped rectangle
-# remove croped borders
-# swap parts of the image
-# collect RL backgrounds to insert into test images (my room)
-
-# swap croped rectangle
-# add black border extending the image
-# add black border croping the image
-# collect RL backgrounds to insert into test images (my room)
-
-
 # also look at albumenations https://github.com/albumentations-team/albumentations
 
-ImagePertubators = {
+ImageAugmentations = {
     "BASIC": image_transforms.RandomChoice([
             image_transforms.AugMix(),
             

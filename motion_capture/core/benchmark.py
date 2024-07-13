@@ -14,13 +14,13 @@ def model_speedtest(
     print(f"\t# parameters: {sum([T.prod(T.tensor(p.shape)) for p in model.parameters()]) / 1000000} M")
     
     model = model.eval()
-
-    test_input = T.rand(input_shape).to(device)
-
-    with T.inference_mode():
+    model = model.to(device)
     
+    test_input = T.rand(input_shape).to(device)
+    
+    with T.inference_mode():
         dt = time.perf_counter()
         for i in range(ntests):
             model(test_input)
             T.cuda.synchronize()
-        print(f"\tfps: {1000 / (time.time() - dt)}")
+        print(f"\tfps: {ntests / (time.perf_counter() - dt)}")

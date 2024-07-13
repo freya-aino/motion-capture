@@ -1,0 +1,4 @@
+defaults:
+  - datasets@WFLW-bbox: WFLW-bbox
+  - datasets@WIDERFace-bbox: WIDERFace-bbox
+  # - datasets@COFW-bbox: COFW-bbox

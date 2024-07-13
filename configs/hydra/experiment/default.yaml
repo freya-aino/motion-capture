@@ -8,6 +8,7 @@ numTrainWorkers: 0
 numValWorkers: 0
 trainValTestSplit: [0.8, 0.15, 0.05]
 batchSize: 32
+preLoadDataset: false
 
 checkpoint_callback:
   dirpath: "checkpoints/${experiment.experimentName}/${experiment.runName}"
