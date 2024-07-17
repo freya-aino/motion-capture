@@ -2,7 +2,7 @@ import math
 import torch as T
 import torch.nn as nn
 
-from .transformer.core import TransformerEncoderBlock
+from .transformer import TransformerEncoderBlock
 from .convolution.core import SPPF
 from motion_capture.core.torchhelpers import positional_embedding
 
