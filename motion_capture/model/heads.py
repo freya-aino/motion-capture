@@ -2,27 +2,21 @@ import math
 import torch as T
 import torch.nn as nn
 
-from .transformer import TransformerEncoderBlock
+# from .transformer import TransformerEncoderBlock
 from .convolution.core import SPPF
 from motion_capture.core.torchhelpers import positional_embedding
 
 class AttentionHead(nn.Module):
-    def __init__(
-        self, 
-        input_size,
-        output_size,
-        output_length,
-        latent_size,
-        depth_multiple: int = 1):
+    def __init__(self, *args, **kwargs):
         
         super(type(self), self).__init__()
         
-        self.output_length = output_length
-        
-        self.input_sppf = SPPF(input_size, latent_size)
-        self.positional_embedding = nn.Parameter(positional_embedding(400, latent_size), requires_grad=False)
+        self.positional_embedding = nn.Parameter(positional_embedding(kwargs["input_sequence_length"], latent_size), requires_grad=False)
         self.internal_state = nn.Parameter(T.randn(output_length, latent_size, dtype=T.float32), requires_grad=True)
-        self.encoder = nn.Sequential(*[TransformerEncoderBlock(latent_size, latent_size) for _ in range(depth_multiple)], TransformerEncoderBlock(latent_size, output_size))
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(
+                d_model=
+                latent_size, output_size, depth=depth)
         
     def forward(self, x: T.Tensor) -> T.Tensor:
         

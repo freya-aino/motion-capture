@@ -17,7 +17,7 @@ from copy import deepcopy
 from torch.utils import data
 from torchvision.transforms.functional import resize, crop
 from torchvision.io import read_image, ImageReadMode
-from torch.nn.functional import one_hot
+from torch.nn.functional import one_hot, pad
 
 # ------------------------------------------------------------------------
 
@@ -155,12 +155,9 @@ class WIDERFaceFaceDetection(data.Dataset):
         # resize image
         image = resize(image, self.image_shape[::-1], antialias=True)
         
-        return {
-            "x": image, 
-            "y": {
-                "bboxes": bboxes, 
-                "bbox-validity": validity
-            }
+        return image, {
+            "bboxes": bboxes, 
+            "bbox-validity": validity
         }
     
     def extract_formated_datapoints(self, anno_file_path: str, image_file_path: str):
@@ -202,15 +199,13 @@ class WIDERFaceFaceDetection(data.Dataset):
         return formated_datapoints
 
 class WFLWFaceDetection(data.Dataset):
-    def __init__(self, image_shape_WH: tuple, path: str, max_number_of_faces: int, padding = "random_elements", center_bbox: bool = True, two_points_bbox: bool = False):
+    def __init__(self, image_shape_WH: tuple, path: str, max_number_of_faces: int, padding = "random_elements"):
         super(type(self), self).__init__()
         
-        self.center_bbox = center_bbox
         self.max_number_of_faces = max_number_of_faces
         self.image_shape = image_shape_WH
         self.image_folder_path = os.path.join(path, "images")
         self.padding = padding
-        self.two_points_bbox = two_points_bbox
         
         with open(os.path.join(path, "annotations", "train.txt")) as f:
             train_datapoints = self.extract_formatted_datapoints(f.readlines())
@@ -254,11 +249,7 @@ class WFLWFaceDetection(data.Dataset):
         bboxes = []
         for datapoint in datapoints:
             bbox = scale_points(datapoint["bbox"], full_image.shape[::-1][:2], self.image_shape).to(dtype=T.float32)
-            # create center bounding boxes
-            if self.center_bbox:
-                bbox = center_bbox(bbox)
-            elif self.two_points_bbox:
-                bbox[1, :] = bbox[0, :] + bbox[1, :]
+            bbox[1, :] = bbox[0, :] + bbox[1, :]
             bboxes.append(bbox)
         
         validity = T.zeros(self.max_number_of_faces, dtype=T.int16)
@@ -277,12 +268,9 @@ class WFLWFaceDetection(data.Dataset):
         # resize full image
         image = resize(full_image, self.image_shape[::-1], antialias=True)
         
-        return {
-            "x": image, 
-            "y": {
-                "bboxes": bboxes, 
-                "bbox-validity": validity
-            }
+        return image, {
+            "bboxes": bboxes, 
+            "bbox-validity": validity
         }
 
 # class WFLWFaceKeypointDetection(data.Dataset):
@@ -346,11 +334,10 @@ class WFLWFaceDetection(data.Dataset):
 #         return individual_datapoints
 
 class COFWFaceDetection(data.Dataset):
-    def __init__(self, path: str, image_shape_WH: tuple, center_bbox: bool = True):
+    def __init__(self, path: str, image_shape_WH: tuple):
         super(type(self), self).__init__()
         
         self.image_shape = image_shape_WH
-        self.center_bbox = center_bbox
         
         train_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_train.mat"))
         val_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_test.mat"))
@@ -382,19 +369,15 @@ class COFWFaceDetection(data.Dataset):
         image = image.permute(0, 2, 1)
         
         # scale keypoints and bbox acording to the new full image size
-        scaled_bbox = scale_points(datapoint[1], image.shape[::-1][:2], self.image_shape)
-        if self.center_bbox:
-            scaled_bbox = center_bbox(scaled_bbox)
-        scaled_bbox = scaled_bbox.reshape(1, 4)
+        bbox = scale_points(datapoint[1], image.shape[::-1][:2], self.image_shape)
+        bbox[1, :] = bbox[0, :] + bbox[1, :]
+        bbox = bbox.reshape(1, 4)
         
         # scale full image and face image
         image = resize(image, self.image_shape[::-1], antialias=True)
         
-        return {
-            "x": image, 
-            "y": {
-                "bbox": scaled_bbox
-            }
+        return image, {
+            "bbox": bbox
         }
 
 # class COFWColorDataset(data.Dataset):
@@ -483,8 +466,7 @@ class MPIIDataset(data.Dataset):
         output_full_image_shape_WH: tuple,
         output_person_image_shape_WH: tuple,
         annotation_path: str,
-        image_folder_path: str,
-        center_bbox: bool = True):
+        image_folder_path: str):
         super(type(self), self).__init__()
         
         self.output_full_image_shape = output_full_image_shape_WH
@@ -516,8 +498,7 @@ class MPIIDataset(data.Dataset):
         full_scaled_bbox = scale_points(bbox, image.shape[::-1][:2], self.output_full_image_shape)
         full_scaled_keypoints = scale_points(keypoints, image.shape[::-1][:2], self.output_full_image_shape)
         
-        if self.center_bbox:
-            full_scaled_bbox = center_bbox(full_scaled_bbox)
+        full_scaled_bbox[1, :] = full_scaled_bbox[0, :] + full_scaled_bbox[1, :]
         
         # crop image and scale image and keyponits to person image size
         person_image = crop(image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
@@ -535,6 +516,109 @@ class MPIIDataset(data.Dataset):
             "localKeypoints": local_scaled_keypoints,
             "keypointVisibility": visibility,
         }
+
+
+class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
+    
+    def __init__(
+        self,
+        image_folder_path: str,
+        annotation_folder_path: str,
+        image_shape_WH: tuple,
+        max_num_persons: int,
+        max_segmentation_points: int = 100):
+        
+        super().__init__()
+        
+        self.max_num_persons = max_num_persons
+        self.max_segmentation_points = max_segmentation_points
+        self.image_shape = image_shape_WH
+        
+        with open(os.path.join(annotation_folder_path, "person_keypoints_train2017.json"), "r") as f:
+            train_json = json.load(f)
+        with open(os.path.join(annotation_folder_path, "person_keypoints_val2017.json"), "r") as f:
+            val_json = json.load(f)
+        
+        self.image_path_map = {}
+        for image in train_json["images"]:
+            self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
+        for image in val_json["images"]:
+            self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
+        
+        self.all_datapoints = {}
+        for annotation in (*train_json["annotations"], *val_json["annotations"]):
+            if annotation["image_id"] not in self.image_path_map:
+                continue
+            
+            formatted_annotation = self.format_datapoint(annotation)
+            if formatted_annotation is None:
+                continue
+            
+            if annotation["image_id"] not in self.all_datapoints:
+                self.all_datapoints[annotation["image_id"]] = []
+            self.all_datapoints[annotation["image_id"]].append(formatted_annotation)
+        
+        keys = list(self.all_datapoints.keys())
+        for k in keys:
+            if len(self.all_datapoints[k]) > max_num_persons:
+                self.all_datapoints.pop(k)
+        
+        self.all_datapoints = list(self.all_datapoints.values())
+    
+    def format_datapoint(self, datapoint):
+        
+        # remove etries with multiple segmentations or if not list
+        if type(datapoint["segmentation"]) != list:
+            return None
+        if len(datapoint["segmentation"]) == 0 or len(datapoint["segmentation"]) > 1:
+            return None
+        
+        segmentation = T.tensor(datapoint["segmentation"][0]).reshape(-1, 2)
+        
+        return {
+            "imagePath": self.image_path_map[datapoint["image_id"]],
+            "bbox": T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2),
+            "segmentation": segmentation,
+        }
+    
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        datapoints = self.all_datapoints[idx]
+        
+        full_image = read_image(datapoints[0]["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        
+        bboxes = []
+        segmentations = []
+        for datapoint in datapoints:
+            bbox = datapoint["bbox"]
+            segmentation = datapoint["segmentation"]
+            
+            # resize bbox, keypoints and segmentation to now full image
+            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], self.image_shape)
+            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], self.image_shape)
+            full_scaled_segmentation = pad(full_scaled_segmentation[:self.max_segmentation_points], (0, 0, 0, max(0, self.max_segmentation_points - full_scaled_segmentation.shape[0])), value=0)
+            
+            full_scaled_bbox[1, :] = full_scaled_bbox[0, :] + full_scaled_bbox[1, :]
+            full_scaled_bbox = full_scaled_bbox.flatten()
+            
+            bboxes.append(full_scaled_bbox)
+            segmentations.append(full_scaled_segmentation)
+        
+        # padding
+        segmentations = pad(T.stack(segmentations)[:self.max_num_persons], (0, 0, 0, 0, 0, max(0, self.max_num_persons - len(segmentations))), value=0)
+        bboxes = pad(T.stack(bboxes)[:self.max_num_persons], (0, 0, 0, max(0, self.max_num_persons - len(bboxes))), value=0)
+        
+        # resize full image
+        full_image = resize(full_image, self.image_shape[::-1])
+        
+        # return concatenation of all datapoints
+        return full_image, {
+            "bboxes": bboxes,
+            "segmentations": segmentations
+        }
+        
 
 class COCO2017PersonKeypointsDataset(data.Dataset):
     

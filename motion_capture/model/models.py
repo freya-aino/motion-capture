@@ -88,7 +88,6 @@ class MainModel(pl.LightningModule):
         self.log(f"{mode}_loss", sum(losses.values()) / len(losses), on_step=False, on_epoch=True, prog_bar=True)
         return losses
     
-    
     def training_step(self, batch, batch_id):
         return self.head_wise_step(batch, "train")
     def validation_step(self, batch, batch_idx):

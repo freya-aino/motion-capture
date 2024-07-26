@@ -12,18 +12,19 @@ class VQVAE(nn.Module):
         input_dim: int,
         output_dim: int,
         num_codebook_entries: int,
-        codebook_dims: int,
+        codebook_dim: int,
         encoder_sequence_length: int,
         depth: int,
         ):
         
         super(type(self), self).__init__()
         
-        self.internal_state = nn.Parameter(T.randn(encoder_sequence_length, input_dim, dtype=T.float32), requires_grad=True)
+        # self.internal_state = nn.Parameter(T.randn(encoder_sequence_length, input_dim, dtype=T.float32), requires_grad=True)
         self.positional_encoding = nn.Parameter(positional_embedding(encoder_sequence_length, input_dim), requires_grad=False)
-        self.encoder = nn.Sequential(TransformerEncoderBlock(input_dim, codebook_dims), *[TransformerEncoderBlock(codebook_dims, codebook_dims) for _ in range(depth - 1)])
-        self.codebook = nn.Embedding(num_codebook_entries, codebook_dims)
-        self.decoder = nn.Sequential(*[TransformerEncoderBlock(codebook_dims, codebook_dims) for _ in range(depth - 1)], TransformerEncoderBlock(codebook_dims, output_dim))
+        self.encoder = TransformerEncoderBlock(input_dim, codebook_dim, depth=depth)
+        self.codebook = nn.Embedding(num_codebook_entries, codebook_dim)
+        self.decoder = TransformerEncoderBlock(codebook_dim, output_dim, depth=depth)
+        
         
     def forward(self, x: T.Tensor):
         # expects inputs of shape: batch_size, dims, sequence_lengths ...
@@ -34,16 +35,12 @@ class VQVAE(nn.Module):
         if z1.shape[1] > self.internal_state.shape[0]:
             print("Warning: encoder sequence length is longer than internal state length, truncating")
         
-        z2 = T.cat([z1[:, :self.internal_state.shape[0]], internal_state], 1)
+        # z2 = T.cat([z1[:, :self.internal_state.shape[0]], internal_state], 1)
         z2 = z2 + self.positional_encoding.expand(z2.shape[0], -1, -1)
         
-        
         z = self.encoder(z2) # non discrete
-        
         c = T.cdist(z, self.codebook.weight, p = 2).argmin(-1)
-        
         z_ = self.codebook(c)
-        
         
         rec = None
         if self.train:
@@ -52,13 +49,15 @@ class VQVAE(nn.Module):
         return {
             "z": z,
             "discrete_z": z_,
-            "c": c,
+            "codebook_indecies": c,
             "reconstruction": rec
         }
     
-    def compute_loss(self, y, y_pred, z, c, alpha = 1, beta = 0.25):
+    def compute_loss(self, y, y_pred, z, codebook_indecies, alpha = 1, beta = 0.25):
         loss_fn = T.nn.functional.l1_loss
-        return alpha * loss_fn(y_pred, y) + beta * loss_fn(z, self.codebook(c))
+        return alpha * loss_fn(y_pred, y) + beta * loss_fn(z, self.codebook(codebook_indecies))
+
+
 
 
 

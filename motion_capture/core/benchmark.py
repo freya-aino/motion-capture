@@ -11,7 +11,7 @@ def model_speedtest(
         device: str = "cuda"):
     
     print(f"speedtest engaged for {model.__class__}")
-    print(f"\t# parameters: {sum([T.prod(T.tensor(p.shape)) for p in model.parameters()]) / 1000000} M")
+    print(f"\t# parameters: {sum([p.numel() for p in model.parameters()]) / 1000000} M")
     
     model = model.eval()
     model = model.to(device)
