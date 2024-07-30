@@ -36,7 +36,7 @@ def scale_points(points: T.Tensor, input_shape: tuple, output_shape: tuple) -> T
     assert len(points.shape) > 1, "points must have at least 2 dimensions"
     
     if points.shape[1] == 2:
-        return points / T.tensor(input_shape) * T.tensor(output_shape)
+        return points / T.tensor(input_shape, dtype=T.float32) * T.tensor(output_shape, dtype=T.float32)
     else:
         return T.cat([points[:, :2] / T.tensor(input_shape) * T.tensor(output_shape), points[:, 2:]], dim=1)
 
@@ -56,6 +56,13 @@ def center_bbox(bbox: T.Tensor) -> T.Tensor:
             [bbox[1][0] / 2, bbox[1][1] / 2]
         ]
     )
+    
+# def norm_image(image):
+#     return image / 255
+
+# y = T.stack([(b[1] / T.tensor([self.image_shape] * 2).flatten(-2)) for b in batch]).to(dtype=T.float32)
+# v = T.stack([b[2] for b in batch]).to(dtype=T.float32)
+# return x, y, v
 
 # def scale_bbox(bbox: list, current_image_shape: list, new_image_shape: list) -> list:
 #     '''
@@ -90,21 +97,12 @@ class CombinedDataset(data.Dataset):
 
 class WIDERFaceFaceDetection(data.Dataset):
     
-    def __init__(self,
-        path: str,
-        image_shape_WH: tuple,
-        max_number_of_faces: int,
-        padding: str = "random_elements",
-        center_bbox: bool = True,
-        two_points_bbox: bool = False):
+    def __init__(self, path: str, image_shape_WH: tuple, max_number_of_faces: int):
         
         super(type(self), self).__init__()
         
         self.image_shape = image_shape_WH
         self.max_number_of_faces = max_number_of_faces
-        self.center_bbox = center_bbox
-        self.padding = padding
-        self.two_points_bbox = two_points_bbox
         
         train_annotations = self.extract_formated_datapoints(
             anno_file_path=os.path.join(path, "train", "train_bbx_gt.txt"),
@@ -130,34 +128,22 @@ class WIDERFaceFaceDetection(data.Dataset):
         bboxes = []
         for i in range(min(datapoint["numberOfFaces"], self.max_number_of_faces)):
             bbox = datapoint["faces"][i]["faceBbox"]
-            bbox = scale_points(bbox, image.shape[::-1][:2], self.image_shape)
-            
-            # center bounding boxes
-            if self.center_bbox:
-                bbox = center_bbox(bbox)
-            elif self.two_points_bbox:
-                bbox[1, :] = bbox[0, :] + bbox[1, :]
-            
+            bbox = scale_points(bbox, image.shape[::-1][:2], [1, 1])
+            bbox[1, :] = bbox[0, :] + bbox[1, :]
             bboxes.append(bbox)
         
-        validity = T.zeros(self.max_number_of_faces, dtype=T.int16)
-        validity[:datapoint["numberOfFaces"]] = 1
+        validity = T.zeros(self.max_number_of_faces).bool()
+        validity[:datapoint["numberOfFaces"]] = True
         
         # pad bboxes if there are less than max_number_of_faces
-        if self.padding == "zeros":
-            padding = [T.zeros((2, 2), dtype=T.float32) for _ in range(self.max_number_of_faces - datapoint["numberOfFaces"])]
-        elif self.padding == "random_elements":
-            padding = [bboxes[random.randint(0, datapoint["numberOfFaces"] - 1)] for _ in range(self.max_number_of_faces - datapoint["numberOfFaces"])]
-        
-        bboxes = T.stack([*bboxes, *padding], dim=0)
-        bboxes = bboxes.reshape(-1, 4)
+        bboxes = pad(T.stack(bboxes).reshape(-1, 4)[:self.max_number_of_faces], (0, 0, 0, max(0, self.max_number_of_faces - len(bboxes))), value=0)
         
         # resize image
-        image = resize(image, self.image_shape[::-1], antialias=True)
+        image = resize(image, self.image_shape[::-1], antialias=True) / 255
         
         return image, {
             "bboxes": bboxes, 
-            "bbox-validity": validity
+            "bboxValidity": validity
         }
     
     def extract_formated_datapoints(self, anno_file_path: str, image_file_path: str):
@@ -199,24 +185,21 @@ class WIDERFaceFaceDetection(data.Dataset):
         return formated_datapoints
 
 class WFLWFaceDetection(data.Dataset):
-    def __init__(self, image_shape_WH: tuple, path: str, max_number_of_faces: int, padding = "random_elements"):
+    def __init__(self, image_shape_WH: tuple, path: str, max_number_of_faces: int):
         super(type(self), self).__init__()
         
         self.max_number_of_faces = max_number_of_faces
         self.image_shape = image_shape_WH
         self.image_folder_path = os.path.join(path, "images")
-        self.padding = padding
         
         with open(os.path.join(path, "annotations", "train.txt")) as f:
             train_datapoints = self.extract_formatted_datapoints(f.readlines())
         with open(os.path.join(path, "annotations", "validation.txt")) as f:
             validation_datapoints = self.extract_formatted_datapoints(f.readlines())
         
-        all_datapoints = [*train_datapoints, *validation_datapoints]
-        
         # group datapoints by image path
         all_datapoints_by_image = {}
-        for dp in all_datapoints:
+        for dp in (*train_datapoints, *validation_datapoints):
             if dp["imagePath"] not in all_datapoints_by_image:
                 all_datapoints_by_image[dp["imagePath"]] = []
             all_datapoints_by_image[dp["imagePath"]].append(dp)
@@ -233,6 +216,7 @@ class WFLWFaceDetection(data.Dataset):
                 "imagePath": os.path.join(self.image_folder_path, line[-1])[:-1],
                 "bbox": T.tensor(bbox, dtype=T.int16).reshape(2, 2)
             })
+        
         return individual_datapoints
     
     def __len__(self):
@@ -248,30 +232,71 @@ class WFLWFaceDetection(data.Dataset):
         
         bboxes = []
         for datapoint in datapoints:
-            bbox = scale_points(datapoint["bbox"], full_image.shape[::-1][:2], self.image_shape).to(dtype=T.float32)
+            bbox = scale_points(datapoint["bbox"], full_image.shape[::-1][:2], [1, 1]).to(dtype=T.float32)
             bbox[1, :] = bbox[0, :] + bbox[1, :]
             bboxes.append(bbox)
         
-        validity = T.zeros(self.max_number_of_faces, dtype=T.int16)
-        validity[:len(bboxes)] = 1
-        validity = one_hot(validity, num_classes=2)
-        
-        if self.padding == "zeros":
-            padding = [T.zeros((4), dtype=T.float32) for _ in range(self.max_number_of_faces - len(bboxes))]
-        elif self.padding == "random_elements":
-            padding = [bboxes[random.randint(0, len(bboxes) - 1)] for _ in range(self.max_number_of_faces - len(bboxes))]
+        validity = T.zeros(self.max_number_of_faces).bool()
+        validity[:len(bboxes)] = True
         
         # stack all and shuffle
-        face_bboxes = T.stack([*bboxes, *padding])
-        face_bboxes = face_bboxes.reshape(-1, 4)
+        bboxes = pad(T.stack(bboxes).reshape(-1, 4), (0, 0, 0, max(0, self.max_number_of_faces - len(bboxes))), value=0)
         
         # resize full image
-        image = resize(full_image, self.image_shape[::-1], antialias=True)
+        image = resize(full_image, self.image_shape[::-1], antialias=True) / 255
         
         return image, {
             "bboxes": bboxes, 
-            "bbox-validity": validity
+            "bboxValidity": validity
         }
+
+class COFWFaceDetection(data.Dataset):
+    def __init__(self, path: str, image_shape_WH: tuple):
+        super(type(self), self).__init__()
+        
+        self.image_shape = image_shape_WH
+        
+        train_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_train.mat"))
+        val_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_test.mat"))
+        
+        self.all_datapoints = [*train_datapoints, *val_datapoints]
+    
+    def extract_formatted_datapoints(self, path: str):
+        file = h5py.File(path, "r")
+        keys = list(file.get("/"))
+        
+        image_refs = np.array(file.get(keys[1])).squeeze()
+        bboxes = T.tensor(np.array(file.get(keys[2])), dtype=T.int16).squeeze().T.reshape(-1, 2, 2)
+        images = (np.array(file[img_ref]) for img_ref in image_refs)
+        return zip(images, bboxes)
+        
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        
+        datapoint = self.all_datapoints[idx]
+        
+        # load image
+        image = T.tensor(datapoint[0], dtype=T.uint8)
+        
+        if len(image.shape) == 2:
+            return None
+        
+        image = image.permute(0, 2, 1)
+        
+        # scale keypoints and bbox acording to the new full image size
+        bbox = scale_points(datapoint[1], image.shape[::-1][:2], [1, 1])
+        bbox[1, :] = bbox[0, :] + bbox[1, :]
+        bbox = bbox.reshape(4)
+        
+        # scale full image and face image
+        image = resize(image, self.image_shape[::-1], antialias=True) / 255
+        
+        return image, {
+            "bbox": bbox
+        }
+
 
 # class WFLWFaceKeypointDetection(data.Dataset):
 #     def __init__(self, image_shape_WH: tuple, path: str):
@@ -333,52 +358,6 @@ class WFLWFaceDetection(data.Dataset):
         
 #         return individual_datapoints
 
-class COFWFaceDetection(data.Dataset):
-    def __init__(self, path: str, image_shape_WH: tuple):
-        super(type(self), self).__init__()
-        
-        self.image_shape = image_shape_WH
-        
-        train_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_train.mat"))
-        val_datapoints = self.extract_formatted_datapoints(os.path.join(path, "color_test.mat"))
-        
-        self.all_datapoints = [*train_datapoints, *val_datapoints]
-    
-    def extract_formatted_datapoints(self, path: str):
-        file = h5py.File(path, "r")
-        keys = list(file.get("/"))
-        
-        image_refs = np.array(file.get(keys[1])).squeeze()
-        bboxes = T.tensor(np.array(file.get(keys[2])), dtype=T.int16).squeeze().T.reshape(-1, 2, 2)
-        images = (np.array(file[img_ref]) for img_ref in image_refs)
-        return zip(images, bboxes)
-        
-    def __len__(self):
-        return len(self.all_datapoints)
-    
-    def __getitem__(self, idx):
-        
-        datapoint = self.all_datapoints[idx]
-        
-        # load image
-        image = T.tensor(datapoint[0], dtype=T.uint8)
-        
-        if len(image.shape) == 2:
-            return None
-        
-        image = image.permute(0, 2, 1)
-        
-        # scale keypoints and bbox acording to the new full image size
-        bbox = scale_points(datapoint[1], image.shape[::-1][:2], self.image_shape)
-        bbox[1, :] = bbox[0, :] + bbox[1, :]
-        bbox = bbox.reshape(1, 4)
-        
-        # scale full image and face image
-        image = resize(image, self.image_shape[::-1], antialias=True)
-        
-        return image, {
-            "bbox": bbox
-        }
 
 # class COFWColorDataset(data.Dataset):
 #     def __init__(
@@ -517,7 +496,6 @@ class MPIIDataset(data.Dataset):
             "keypointVisibility": visibility,
         }
 
-
 class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
     
     def __init__(
@@ -575,6 +553,9 @@ class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
         
         segmentation = T.tensor(datapoint["segmentation"][0]).reshape(-1, 2)
         
+        if segmentation.shape[0] > self.max_segmentation_points:
+            return None
+        
         return {
             "imagePath": self.image_path_map[datapoint["image_id"]],
             "bbox": T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2),
@@ -596,166 +577,68 @@ class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
             segmentation = datapoint["segmentation"]
             
             # resize bbox, keypoints and segmentation to now full image
-            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], self.image_shape)
-            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], self.image_shape)
+            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], [1, 1])
+            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], [1, 1])
             full_scaled_segmentation = pad(full_scaled_segmentation[:self.max_segmentation_points], (0, 0, 0, max(0, self.max_segmentation_points - full_scaled_segmentation.shape[0])), value=0)
             
             full_scaled_bbox[1, :] = full_scaled_bbox[0, :] + full_scaled_bbox[1, :]
-            full_scaled_bbox = full_scaled_bbox.flatten()
             
             bboxes.append(full_scaled_bbox)
             segmentations.append(full_scaled_segmentation)
         
         # padding
+        bboxes = pad(T.stack(bboxes)[:self.max_num_persons].reshape(-1, 4), (0, 0, 0, max(0, self.max_num_persons - len(bboxes))), value=0)
         segmentations = pad(T.stack(segmentations)[:self.max_num_persons], (0, 0, 0, 0, 0, max(0, self.max_num_persons - len(segmentations))), value=0)
-        bboxes = pad(T.stack(bboxes)[:self.max_num_persons], (0, 0, 0, max(0, self.max_num_persons - len(bboxes))), value=0)
+        
+        # validity mask
+        bbox_validity_mask = T.zeros(self.max_num_persons).bool()
+        bbox_validity_mask[(bboxes != 0).all(-1)] = True
+        segmentation_validity_mask = T.zeros(self.max_num_persons, self.max_segmentation_points).bool()
+        segmentation_validity_mask[(segmentations != 0).all(-1)] = True
         
         # resize full image
-        full_image = resize(full_image, self.image_shape[::-1])
+        full_image = resize(full_image, self.image_shape[::-1]) / 255
         
         # return concatenation of all datapoints
         return full_image, {
             "bboxes": bboxes,
-            "segmentations": segmentations
+            "bboxValidity": bbox_validity_mask,
+            "segmentations": segmentations,
+            "segmentationValidity": segmentation_validity_mask
         }
-        
 
 class COCO2017PersonKeypointsDataset(data.Dataset):
+    # ! this is the same set of images produced by COCO2017FullBody
     
-    def __init__(
-        self,
-        image_folder_path: str,
-        annotation_folder_path: str,
-        output_full_image_shape_WH: tuple,
-        output_person_image_shape_WH: tuple,
-        min_person_bbox_size: int = 100, # in pixels for both width and height
-        max_segmentation_points: int = 100,
-        center_bbox: bool = True,
-        filter_is_crowd: bool = True,
-        load_val_only: bool = False):
-        
+    def __init__(self, image_folder_path: str, annotation_folder_path: str, image_shape_WH: tuple, min_person_bbox_size: int = 100, padding: int = 20):
         super().__init__()
         
-        self.center_bbox = center_bbox
-        self.output_full_image_shape = output_full_image_shape_WH
-        self.output_person_image_shape = output_person_image_shape_WH
+        self.image_shape = image_shape_WH
         self.min_person_bbox_size = min_person_bbox_size
+        self.padding = padding
         
-        self.max_segmentation_points = max_segmentation_points
-        
-        # get all datapoints
-        images = []
-        annotations = []
-        if not load_val_only:
-            with open(os.path.join(annotation_folder_path, "person_keypoints_train2017.json"), "r") as f:
-                j = json.load(f)
-                images.extend(j["images"])
-                annotations.extend(j["annotations"])
+        with open(os.path.join(annotation_folder_path, "person_keypoints_train2017.json"), "r") as f:
+            train_json = json.load(f)
         with open(os.path.join(annotation_folder_path, "person_keypoints_val2017.json"), "r") as f:
-            j = json.load(f)
-            images.extend(j["images"])
-            annotations.extend(j["annotations"])
+            test_json = json.load(f)
         
         # get all image_id : image_path pairs
         self.image_path_map = {}
-        for image in images:
+        for image in (*train_json["images"], *test_json["images"]):
             self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
         
         # gruop annotations by image_id
-        image_annotation_map = {}
-        for annotation in annotations:
-            formatted_annotation = self.format_datapoint(annotation, filter_is_crowd)
-            
-            if formatted_annotation is not None:
-                if annotation["image_id"] not in image_annotation_map:
-                    image_annotation_map[annotation["image_id"]] = []
-                image_annotation_map[annotation["image_id"]].append(formatted_annotation)
+        self.all_datapoints = []
+        for annotation in (*train_json["annotations"], *test_json["annotations"]):
+            formatted_annotation = self.format_datapoint(annotation)
+            if formatted_annotation is None:
+                continue
+            self.all_datapoints.append(formatted_annotation)
         
-        # annotations_by_image = pd.DataFrame(annotations).groupby("image_id").apply(lambda x: x.to_dict(orient="records")).to_list()
-        self.all_datapoints = list(image_annotation_map.values())
-        
-    def __len__(self):
-        return len(self.all_datapoints)
-    
-    def __getitem__(self, idx):
-        image_datapoints = self.all_datapoints[idx]
-        
-        full_image = read_image(image_datapoints[0]["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
-        
-        out = []
-        for datapoint in image_datapoints:
-            bbox = datapoint["bbox"]
-            keypoints = datapoint["keypoints"]
-            visibility = datapoint["keypointVisibility"]
-            validity = datapoint["keypointValidity"]
-            segmentation = datapoint["segmentation"]
-            
-            # padd segmentation to maxMsegmentation_points
-            padding = T.zeros((self.max_segmentation_points - segmentation.shape[0], 2), dtype=T.int16)
-            segmentation = T.cat([segmentation, padding], dim=0)
-            
-            # resize bbox, keypoints and segmentation to now full image
-            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], self.output_full_image_shape)
-            full_scaled_keypoints = scale_points(keypoints, full_image.shape[::-1][:2], self.output_full_image_shape)
-            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], self.output_full_image_shape)
-            
-            if self.center_bbox:
-                full_scaled_bbox = center_bbox(full_scaled_bbox)
-            
-            # crop person image and scale keypoints, and segmentation
-            person_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
-            local_scaled_keypoints = scale_points(keypoints - bbox[0], person_image.shape[::-1][:2], self.output_person_image_shape)
-            local_scaled_segmentation = scale_points(segmentation - bbox[0], person_image.shape[::-1][:2], self.output_person_image_shape)
-            
-            # resize person image
-            person_image = resize(person_image, self.output_person_image_shape[::-1])
-            
-            out.append({
-                "personImage": person_image,
-                "personBbox": full_scaled_bbox,
-                "keypointVisibility": visibility,
-                "keypointValidity": validity,
-                "localKeypoints": local_scaled_keypoints,
-                "globalKeypoints": full_scaled_keypoints,
-                "localSegmentation": local_scaled_segmentation,
-                "globalSegmentation": full_scaled_segmentation,
-                # "category": T.tensor(datapoint["category"])
-            })
-        
-        # resize full image
-        full_image = resize(full_image, self.output_full_image_shape[::-1])
-        
-        # return concatenation of all datapoints
-        return {
-            "fullImage": full_image,
-            "personImages": T.stack([dp["personImage"] for dp in out]),
-            "personBboxes": T.stack([dp["personBbox"] for dp in out]),
-            "keypointVisibility": T.stack([dp["keypointVisibility"] for dp in out]),
-            "keypointValidity": T.stack([dp["keypointValidity"] for dp in out]),
-            "localKeypoints": T.stack([dp["localKeypoints"] for dp in out]),
-            "globalKeypoints": T.stack([dp["globalKeypoints"] for dp in out]),
-            "localSegmentations": T.stack([dp["localSegmentation"] for dp in out]),
-            "globalSegmentations": T.stack([dp["globalSegmentation"] for dp in out]),
-        }
-        
-        
-    
-    def format_datapoint(self, datapoint, filter_is_crowd):
-        
-        if filter_is_crowd and datapoint["iscrowd"]:
-            return None
+    def format_datapoint(self, datapoint):
         
         # remove too large bounding boxes
         if datapoint["bbox"][2] < self.min_person_bbox_size or datapoint["bbox"][3] < self.min_person_bbox_size:
-            return None
-        
-        # remove etries with multiple segmentations
-        if len(datapoint["segmentation"]) == 0 or len(datapoint["segmentation"]) > 1:
-            return None
-        
-        segmentations = T.tensor(datapoint["segmentation"][0]).reshape(-1, 2)
-        
-        if segmentations.shape[0] > self.max_segmentation_points:
             return None
         
         keypoints = T.tensor(datapoint["keypoints"]).reshape(-1, 3)
@@ -766,10 +649,37 @@ class COCO2017PersonKeypointsDataset(data.Dataset):
             "keypoints": keypoints[:, :2],
             "keypointVisibility": keypoints[:, 2] == 2,
             "keypointValidity": keypoints[:, 2] > 0,
-            "segmentation": segmentations,
-            "category": datapoint["category_id"]
         }
-
+        
+    def __len__(self):
+        return len(self.all_datapoints)
+    
+    def __getitem__(self, idx):
+        dp = self.all_datapoints[idx]
+        
+        full_image = read_image(dp["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        
+        bbox = dp["bbox"]
+        keypoints = dp["keypoints"]
+        visibility = dp["keypointVisibility"].bool()
+        validity = dp["keypointValidity"].bool()
+        
+        bbox[0, :] -= self.padding
+        bbox[1, :] += self.padding * 2
+        
+        # crop person image and scale keypoints
+        person_image = crop(full_image, bbox[0][1], bbox[0][0], bbox[1][1], bbox[1][0])
+        local_scaled_keypoints = scale_points(keypoints - bbox[0], person_image.shape[::-1][:2], [1, 1])
+        
+        # resize person image
+        person_image = resize(person_image, self.image_shape[::-1]) / 255
+        
+        # return concatenation of all datapoints
+        return person_image, {
+            "keypoints": local_scaled_keypoints,
+            "keypointValidity": validity,
+            "keypointVisibility": visibility,
+        }
 
 class COCOPanopticsObjectDetection(data.Dataset):
     
@@ -1266,509 +1176,18 @@ class COCO2017WholeBodyDataset(data.Dataset):
         
         return formatted_datapoints
 
-
-
-
-# class COCODataset(data.Dataset):
-#     def __init__(self):
-#         super(type(self), self).__init__()
-
-#         self.anno_list = []
-
-#     def __len__(self):
-#         return len(self.anno_list)
-
-#     def __getitem__(self, idx):
-
-#         coco = self.anno_list[idx]["coco"]
-#         halpe = self.anno_list[idx]["halpe"]
-
-#         coco_img = cv2.imread(coco["image_path"])
-#         halpe_img = cv2.imread(halpe[""])
-
-
-#         coco_ordered_kpts_loc = self.ordered_kpts_to_tensor(coco["loc"])
-#         coco_ordered_kpts_vis = self.ordered_kpts_to_tensor(coco["vis"])
-#         halpe_ordered_kpts_loc = self.ordered_kpts_to_tensor(halpe["loc"])
-#         halpe_ordered_kpts_vis = self.ordered_kpts_to_tensor(halpe["vis"])
-
-#         coco_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(coco["body_part_kpts"])
-#         halpe_ordered_bp_kpts = self.ordered_bp_kpts_to_tensor(halpe["body_part_kpts"])
+class HAKELarge(data.Dataset):
+    def __init__(self, annotation_path, image_path, image_shape_WH):
+        super().__init__()
         
-#         coco_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(coco["body_part_kpts"], coco["face_valid"], coco["left_hand_valid"], coco["right_hand_valid"], coco["foot_valid"])
-#         halpe_ordered_bp_kpts_vis = self.ordered_bp_kpts_visibility_to_tensor(halpe["body_part_kpts"], True, True, True, True)
-
-#         y = {
-#             "coco": {
-#                 "img": coco_img.to(self.device),
-#                 "bbox": coco["annotation"]["bbox"].to(self.device),
-                
-#                 "body_parts_kpts_loc": coco_ordered_bp_kpts.to(self.device),
-#                 "body_part_kpts_vis": coco_ordered_bp_kpts_vis.to(self.device),
-
-#                 "ordered_kpts_loc": coco_ordered_kpts_loc.to(self.device),
-#                 "ordered_kpts_vis": coco_ordered_kpts_vis.to(self.device),
-#             },
-#             "halpe": {
-#                 "img": halpe["img"].to(self.device),
-#                 "bbox": halpe["annotation"]["bbox"].to(self.device),
-                
-#                 "body_parts_kpts_loc": halpe_ordered_bp_kpts.to(self.device),
-#                 "body_parts_kpts_vis": halpe_ordered_bp_kpts_vis.to(self.device),
-                
-#                 "ordered_kpts_loc": halpe_ordered_kpts_loc.to(self.device),
-#                 "ordered_kpts_vis": halpe_ordered_kpts_vis.to(self.device),
-#             }
-#         }
-
-#         return y
-
-#     def ordered_bp_kpts_visibility_to_tensor(self, kpts, face_valid, left_hand_valid, right_hand_valid, foot_valid):
-#         return T.cat([
-#             [1, 0] if face_valid and T.min(kpts["head"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["left_shoulder"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["right_shoulder"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["left_elbow"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["right_elbow"]) != 0 else [0, 1],
-#             [1, 0] if left_hand_valid and T.min(kpts["left_hand"]) != 0 else [0, 1],
-#             [1, 0] if right_hand_valid and T.min(kpts["right_hand"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["left_hip"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["right_hip"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["left_knee"]) != 0 else [0, 1],
-#             [1, 0] if T.min(kpts["right_knee"]) != 0 else [0, 1],
-#             [1, 0] if foot_valid and T.min(kpts["left_foot"]) != 0 else [0, 1],
-#             [1, 0] if foot_valid and T.min(kpts["right_foot"]) != 0 else [0, 1],
-#         ], dtype=T.float32)
-
-#     def ordered_bp_kpts_to_tensor(self, kpts):
-#         return T.tensor(np.concatenate([
-#             kpts["head"],
-#             kpts["left_shoulder"],
-#             kpts["right_shoulder"],
-#             kpts["left_elbow"],
-#             kpts["right_elbow"],
-#             kpts["left_hand"],
-#             kpts["right_hand"],
-#             kpts["left_hip"],
-#             kpts["right_hip"],
-#             kpts["left_knee"],
-#             kpts["right_knee"],
-#             kpts["left_foot"],
-#             kpts["right_foot"],
-#         ]), dtype=T.float32)
-
-#     def ordered_kpts_to_tensor(self, kpts):
-#         return T.tensor(np.concatenate([
-#             kpts["body"]["nose"], # tpn_pose_loc[0]
-#             kpts["body"]["left_eye"], # tpn_pose_loc[1]
-#             kpts["body"]["right_eye"], # tpn_pose_loc[2]
-#             kpts["body"]["left_ear"], # tpn_pose_loc[3]
-#             kpts["body"]["right_ear"], # tpn_pose_loc[4]
-#             kpts["body"]["left_shoulder"], # tpn_pose_loc[5]
-#             kpts["body"]["right_shoulder"], # tpn_pose_loc[6]
-#             kpts["body"]["left_elbow"], # tpn_pose_loc[7]
-#             kpts["body"]["right_elbow"], # tpn_pose_loc[8]
-#             kpts["body"]["left_wrist"], # tpn_pose_loc[9]
-#             kpts["body"]["right_wrist"], # tpn_pose_loc[10]
-#             kpts["body"]["left_hip"], # tpn_pose_loc[11]
-#             kpts["body"]["right_hip"], # tpn_pose_loc[12]
-#             kpts["body"]["left_knee"], # tpn_pose_loc[13]
-#             kpts["body"]["right_knee"], # tpn_pose_loc[14]
-#             kpts["body"]["left_ankle"], # tpn_pose_loc[15]
-#             kpts["body"]["right_ankle"], # tpn_pose_loc[16]
-#             kpts["body"]["left_heel"], # tpn_pose_loc[17]
-#             kpts["body"]["right_heel"], # tpn_pose_loc[18]
-#             kpts["body"]["left_big_toe"], # tpn_pose_loc[19]
-#             kpts["body"]["right_big_toe"], # tpn_pose_loc[20]
-#             kpts["body"]["left_small_toe"], # tpn_pose_loc[21]
-#             kpts["body"]["right_small_toe"], # tpn_pose_loc[22]
-#             kpts["face"]["jawline"], # tpn_pose_loc[23:40]
-#             kpts["face"]["brows"]["right"], # tpn_pose_loc[40:45]
-#             kpts["face"]["brows"]["left"], # tpn_pose_loc[45:50]
-#             kpts["face"]["nose"]["bridge"], # tpn_pose_loc[50:54]
-#             kpts["face"]["nose"]["bottom"], # tpn_pose_loc[54:59]
-#             kpts["face"]["eyes"]["left"], # tpn_pose_loc[59:65]
-#             kpts["face"]["eyes"]["right"], # tpn_pose_loc[65:71]
-#             kpts["face"]["mouth"]["corner"]["left"], # tpn_pose_loc[71]
-#             kpts["face"]["mouth"]["corner"]["right"], # tpn_pose_loc[72]
-#             kpts["face"]["mouth"]["upper"]["top"], # tpn_pose_loc[73:78]
-#             kpts["face"]["mouth"]["upper"]["bottom"], # tpn_pose_loc[78:81]
-#             kpts["face"]["mouth"]["lower"]["top"], # tpn_pose_loc[81:84]
-#             kpts["face"]["mouth"]["lower"]["bottom"], # tpn_pose_loc[84:89]
-#             kpts["left_hand"]["thumb"], # tpn_pose_loc[89:94]
-#             kpts["left_hand"]["index"], # tpn_pose_loc[94:98]
-#             kpts["left_hand"]["middle"], # tpn_pose_loc[98:102]
-#             kpts["left_hand"]["ring"], # tpn_pose_loc[102:106]
-#             kpts["left_hand"]["pinky"], # tpn_pose_loc[106:109]
-#             kpts["right_hand"]["thumb"], # tpn_pose_loc[109:114]
-#             kpts["right_hand"]["index"], # tpn_pose_loc[114:118]
-#             kpts["right_hand"]["middle"], # tpn_pose_loc[118:122]
-#             kpts["right_hand"]["ring"], # tpn_pose_loc[122:126]
-#             kpts["right_hand"]["pinky"], # tpn_pose_loc[126:131]
-#         ]), dtype = T.float32)
-
-
-
-
-
-# # TODO: refactoring
-# class COCOWholeBody(data.Dataset):
-
-#     def __init__(self, annotation_json_path: str, image_folder_path: str):
-#         super(type(self), self).__init__()
-
-#         x = json.load(open(annotation_json_path, "r"))
-#         out = {}
-
-#         for img in x["images"]:
-#             out[img["id"]] = {
-#                 "width": img["width"],
-#                 "height": img["height"],
-#                 "image_path": image_folder_path + img["file_name"],
-#                 "annotation": []
-#             }
-
-#         for a in x["annotations"]:
-#             if a["image_id"] in out:
-
-#                 o = {}
-                
-#                 o["segmentation"] = np.array(a["segmentation"])
-#                 o["num_kpts"] = a["num_keypoints"]
-#                 o["id"] = a["id"]
-#                 o["area"] = a["area"]
-#                 o["iscrowd"] = a["iscrowd"]
-
-#                 # TODO: format category
-#                 o["category_id"] = a["category_id"]
-
-#                 o["bbox"] = a["bbox"]
-#                 o["face_bbox"] = None if all([fb == 0. for fb in a["face_box"]]) else a["face_box"]
-#                 o["left_hand_bbox"] = None if all([fb == 0. for fb in a["lefthand_box"]]) else a["lefthand_box"]
-#                 o["right_hand_bbox"] = None if all([fb == 0. for fb in a["righthand_box"]]) else a["righthand_box"]
-
-#                 o["face_valid"] = a["face_valid"]
-#                 o["left_hand_valid"] = a["lefthand_valid"]
-#                 o["right_hand_valid"] = a["righthand_valid"]
-#                 o["foot_valid"] = a["foot_valid"]
-
-#                 kpts = [*a["keypoints"], *a["foot_kpts"], *a["face_kpts"], *a["lefthand_kpts"], *a["righthand_kpts"]]
-#                 kpts = np.array(kpts).reshape((133, 3))
-
-#                 o["keypoints"] = {
-#                     "body": {
-#                         "nose": kpts[0],
-#                         "left_eye": kpts[1],
-#                         "right_eye": kpts[2],
-#                         "left_ear": kpts[3],
-#                         "right_ear": kpts[4],
-#                         "left_shoulder": kpts[5],
-#                         "right_shoulder": kpts[6],
-#                         "left_elbow": kpts[7],
-#                         "right_elbow": kpts[8],
-#                         "left_wrist": kpts[9],
-#                         "right_wrist": kpts[10],
-#                         "left_hip": kpts[11],
-#                         "right_hip": kpts[12],
-#                         "left_knee": kpts[13],
-#                         "right_knee": kpts[14],
-#                         "left_ankle": kpts[15],
-#                         "right_ankle": kpts[16],
-#                         "left_heel": kpts[19],
-#                         "right_heel": kpts[22],
-#                         "left_big_toe": kpts[17],
-#                         "right_big_toe": kpts[20],
-#                         "left_small_toe": kpts[18],
-#                         "right_small_toe": kpts[21],
-#                     },
-#                     "face": {
-#                         "jawline": kpts[23:40],
-#                         "brows": {
-#                             "right": kpts[40:45],
-#                             "left": kpts[45:50],
-#                         },
-#                         "nose": {
-#                             "bridge": kpts[50:54],
-#                             "bottom": kpts[54:59],
-#                         },
-#                         "eyes": {
-#                             "right": kpts[59:65],
-#                             "left": kpts[65:71],
-#                         },
-#                         "mouth": {
-#                             "corner": {
-#                                 "right": kpts[71],
-#                                 "left": kpts[77],
-#                             },
-#                             "upper": {
-#                                 "top": kpts[72:77],
-#                                 "bottom": kpts[88:91],
-#                             },
-#                             "lower": {
-#                                 "top": kpts[84:87],
-#                                 "bottom": kpts[78:83],
-#                             }
-#                         }
-#                     },
-#                     "left_hand": { 
-#                         "thumb": kpts[91:96],
-#                         "index": kpts[96:100],
-#                         "middle": kpts[100:104],
-#                         "ring": kpts[104:108],
-#                         "pinky": kpts[108:112],
-#                     },
-#                     "right_hand": {
-#                         "thumb": kpts[112:117],
-#                         "index": kpts[117:121],
-#                         "middle": kpts[121:125],
-#                         "ring": kpts[125:129],
-#                         "pinky": kpts[129:133],
-#                     }
-#                 }
-
-#                 out[a["image_id"]]["annotation"].append(o)
-
-#         out_ = {}
-#         for k in out:
-#             if len(out[k]["annotation"]) == 1:
-#                 out_[k] = deepcopy(out[k])
-#                 out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
-
-#                 # BBOX
-#                 x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
-#                 x_max = x_min + w
-#                 y_max = y_min + h
-#                 out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
-
-#                 out_[k]["body_part_kpts"] = {
-#                     "head": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["nose"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
-#                     ]), axis = 0),
-#                     "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
-#                     "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
-#                     "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
-#                     "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
-#                     "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
-#                     "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
-#                     "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
-#                     "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
-#                     "left_foot": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
-#                     ]), axis = 0),
-#                     "right_foot": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
-#                     ]), axis = 0),
-#                     "left_hand": T.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
-#                         out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
-#                         out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
-#                         out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
-#                         out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
-#                         out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
-#                     ]), axis = 0),
-#                     "right_hand": T.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
-#                         out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
-#                         out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
-#                         out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
-#                         out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
-#                         out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
-#                     ]), axis = 0),
-#                 }
-
-#         del out
-#         return out_
-    
-# # TODO: refactoring
-# class HalpeFullBody(data.Dataset):
-
-#     def __init__(self, annotation_json_path: str, image_folder_path: str):
-#         super(type(self), self).__init__()
+        self.annotation_path = annotation_path
+        self.image_path = image_path
+        self.image_shape = image_shape_WH
         
-#         x = json.load(open(anno_path, "r"))
-#         out = {}
-
-#         for img in x["images"]:
-#             out[img["id"]] = {
-#                 "width": img["width"],
-#                 "height": img["height"],
-#                 "image_path": img_folder + img["file_name"],
-#                 "annotation": []
-#             }
-
-#         for a in x["annotations"]:
-#             if a["image_id"] in out:
-
-#                 o = {}
-                
-#                 o["bbox"] = a["bbox"]
-
-#                 kpts = a["keypoints"]
-#                 kpts = np.array(kpts).reshape((136, 3))
-
-#                 o["keypoints"] = {
-#                     "body": {
-#                         "nose": kpts[0],
-#                         "left_eye": kpts[1],
-#                         "right_eye": kpts[2],
-#                         "left_ear": kpts[3],
-#                         "right_ear": kpts[4],
-#                         "left_shoulder": kpts[5],
-#                         "right_shoulder": kpts[6],
-#                         "left_elbow": kpts[7],
-#                         "right_elbow": kpts[8],
-#                         "left_wrist": kpts[9],
-#                         "right_wrist": kpts[10],
-#                         "left_hip": kpts[11],
-#                         "right_hip": kpts[12],
-#                         "left_knee": kpts[13],
-#                         "right_knee": kpts[14],
-#                         "left_ankle": kpts[15],
-#                         "right_ankle": kpts[16],
-#                         # "head": kpts[17],
-#                         # "neck": kpts[18],
-#                         # "hip": kpts[19],
-#                         "left_big_toe": kpts[20],
-#                         "right_big_toe": kpts[21],
-#                         "left_small_toe": kpts[22],
-#                         "right_small_toe": kpts[23],
-#                         "left_heel": kpts[24],
-#                         "right_heel": kpts[25],
-#                     },
-#                     "face": { # 26-93
-#                         "jawline": kpts[26:43],
-#                         "brows": {
-#                             "right": kpts[43:48],
-#                             "left": kpts[48:53],
-#                         },
-#                         "nose": {
-#                             "bridge": kpts[53:57],
-#                             "bottom": kpts[57:62],
-#                         },
-#                         "eyes": {
-#                             "right": kpts[62:68],
-#                             "left": kpts[68:74],
-#                         },
-#                         "mouth": {
-#                             "corner": {
-#                                 "right": kpts[74],
-#                                 "left": kpts[80],
-#                             },
-#                             "upper": {
-#                                 "top": kpts[75:80],
-#                                 "bottom": kpts[87:90],
-#                             },
-#                             "lower": {
-#                                 "top": kpts[91:94],
-#                                 "bottom": kpts[81:86],
-#                             }
-#                         }
-#                     },
-#                     "left_hand": { # 94-114
-#                         "thumb": kpts[94:99],
-#                         "index": kpts[99:94+9],
-#                         "middle": kpts[94+9:94+13],
-#                         "ring": kpts[94+13:94+17],
-#                         "pinky": kpts[94+17:94+21]
-#                     },
-#                     "right_hand": { # 115-136
-#                         "thumb": kpts[115:120],
-#                         "index": kpts[120:115+9],
-#                         "middle": kpts[115+9:115+13],
-#                         "ring": kpts[115+13:115+17],
-#                         "pinky": kpts[115+17:115+21],
-#                     }
-#                 }
-
-
-
-#                 out[a["image_id"]]["annotation"].append(o)
-
-
-#         out_ = {}
-#         for k in out:
-#             if len(out[k]["annotation"]) == 1:
-#                 out_[k] = deepcopy(out[k])
-#                 out_[k]["annotation"] = deepcopy(out[k]["annotation"][0])
-
-#                 # BBOX
-#                 x_min, y_min, w, h = [int(a) for a in out_[k]["annotation"]["bbox"]]
-#                 x_max = x_min + w
-#                 y_max = y_min + h
-#                 out_[k]["annotation"]["bbox"] = np.array([x_min, y_min, x_max, y_max])
-
-#                 out_[k]["body_part_kpts"] = {
-#                     "head": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["nose"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_eye"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_eye"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_ear"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_ear"]
-#                     ]), axis = 0),
-#                     "left_shoulder": out_[k]["annotation"]["keypoints"]["body"]["left_shoulder"],
-#                     "right_shoulder": out_[k]["annotation"]["keypoints"]["body"]["right_shoulder"],
-#                     "left_elbow": out_[k]["annotation"]["keypoints"]["body"]["left_elbow"],
-#                     "right_elbow": out_[k]["annotation"]["keypoints"]["body"]["right_elbow"],
-#                     "left_hip": out_[k]["annotation"]["keypoints"]["body"]["left_hip"],
-#                     "right_hip": out_[k]["annotation"]["keypoints"]["body"]["right_hip"],
-#                     "left_knee": out_[k]["annotation"]["keypoints"]["body"]["left_knee"],
-#                     "right_knee": out_[k]["annotation"]["keypoints"]["body"]["right_knee"],
-#                     "left_foot": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_ankle"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_heel"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_big_toe"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_small_toe"],
-#                     ]), axis = 0),
-#                     "right_foot": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_ankle"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_heel"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_big_toe"],
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_small_toe"],
-#                     ]), axis = 0),
-#                     "left_hand": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["left_wrist"],
-#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["thumb"],
-#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["index"],
-#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["middle"],
-#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["ring"],
-#                         *out_[k]["annotation"]["keypoints"]["left_hand"]["pinky"],
-#                     ]), axis = 0),
-#                     "right_hand": np.mean(np.stack([
-#                         out_[k]["annotation"]["keypoints"]["body"]["right_wrist"],
-#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["thumb"],
-#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["index"],
-#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["middle"],
-#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["ring"],
-#                         *out_[k]["annotation"]["keypoints"]["right_hand"]["pinky"],
-#                     ]), axis = 0),
-#                 }
-
-#         del out
-#         return out_
-
-# # TODO
-# class DexYCB(data.Dataset):
+        with open(os.path.join(annotation_path, "hake_large_annotation.json"), "r") as f:
+            self.datapoints = json.load(f)
+        
+        
+    def __len__(self):
+        return len(self.datapoints)
     
-#     def __init__(self, annotation_json_path: str, image_folder_path: str):
-#         super(type(self), self).__init__()
-
-# # TODO
-# class FreiHAND(data.Dataset):
-    
-#     def __init__(self, annotation_json_path: str, image_folder_path: str):
-#         super(type(self), self).__init__()
-
-# # TODO
-# class ICVL(data.Dataset):
-#     def __init__(self, annotation_json_path: str, image_folder_path: str):
-#         super(type(self), self).__init__()

@@ -1,3 +1,6 @@
 defaults:
-  - /experiment: bboxBackbone/experiment_1
+  - /experiment: experiment-1
+  - /training: default-training
+  - /model: default-model
+  - /data: default-data
   - _self_

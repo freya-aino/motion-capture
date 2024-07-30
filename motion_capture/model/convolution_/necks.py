@@ -2,7 +2,7 @@ import math
 import torch as T
 import torch.nn as nn
 
-from .core import ConvBlock, C2f
+from ..core import ConvBlock, C2f
 from motion_capture.core.torchhelpers import positional_embedding
 
 

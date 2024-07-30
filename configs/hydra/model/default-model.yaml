@@ -1,0 +1,35 @@
+backbone: "timm/convnextv2_atto.fcmae_ft_in1k"
+
+vqvae:
+  input_dim: 320
+  input_sequence_length: 49
+
+  codebook_dim: 512
+  num_codebook_entries: 1024
+  codebook_sequence_length: 128
+
+  output_dim: 320
+  output_sequence_length: 49
+  
+  transformer:
+    nhead: 8
+    num_encoder_layers: 6
+    num_decoder_layers: 6
+    dim_feedforward: 2048
+    dropout: 0.1
+    activation: "gelu"
+
+heads:
+  personBbox:
+    input_dim: ${model.vqvae.num_codebook_entries}
+    input_sequence_length: ${model.vqvae.codebook_sequence_length}
+    output_dim: 4
+    output_sequence_length: 10
+    continuous_output: True
+    transformer:
+      nhead: 2
+      num_encoder_layers: 1
+      num_decoder_layers: 1
+      dim_feedforward: 512
+      dropout: 0.1
+      activation: "gelu"

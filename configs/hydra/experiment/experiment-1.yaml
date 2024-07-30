@@ -1,0 +1,6 @@
+defaults:
+  - defaults
+
+# overrides
+experimentName: "bboxFinetune"
+runName: "run-1"

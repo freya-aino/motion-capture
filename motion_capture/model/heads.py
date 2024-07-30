@@ -1,121 +1,126 @@
-import math
+from importlib import import_module
 import torch as T
 import torch.nn as nn
 
-# from .transformer import TransformerEncoderBlock
-from .convolution.core import SPPF
 from motion_capture.core.torchhelpers import positional_embedding
+from motion_capture.model.convolution import ConvBlock, C2f
+
+class UpsampleCrossAttentionrNeck(nn.Module):
+    def __init__(
+        self, 
+        output_size,
+        latent_size = 1024,
+        depth_multiple = 1):
+        super(type(self), self).__init__()
+        
+        assert depth_multiple >= 1, "depth_multiple must be at least 1"
+        assert latent_size / 2 > 1, "latent_size must be at least be divisible by 2"
+        
+        codec_latent_size = latent_size
+        mid_latent_size = int(latent_size / 2)
+        inner_latent_size = int(latent_size / 4)
+        
+        self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
+        
+        self.reverse1 = nn.Sequential(
+            C2f(codec_latent_size + mid_latent_size, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False)
+        )
+        self.reverse2 = nn.Sequential(
+            C2f(mid_latent_size + inner_latent_size, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(mid_latent_size, mid_latent_size, kernel_size=3, stride=2, padding=1)
+        )
+        self.reverse3 = nn.Sequential(
+            C2f(mid_latent_size * 2, mid_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=False),
+            ConvBlock(mid_latent_size, codec_latent_size, kernel_size=3, stride=2, padding=1)
+        )
+        
+        self.Q_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
+        self.K_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
+        self.V_encoder = ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0)
+        # nn.Sequential(
+        #     ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0),
+        #     C2f(codec_latent_size, codec_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=True),
+        #     ConvBlock(codec_latent_size, codec_latent_size, kernel_size=1, stride=1, padding=0),
+        #     C2f(codec_latent_size, codec_latent_size, kernel_size=1, n=int(depth_multiple), shortcut=True),
+        #     ConvBlock(codec_latent_size, codec_latent_size + positional_embedding_size, kernel_size=1, stride=1, padding=0)
+        # )
+        
+        self.positional_embedding = nn.Parameter(positional_embedding(20*20, codec_latent_size), requires_grad=False)
+        
+        self.output_1d_conv = nn.Conv1d(codec_latent_size, output_size, kernel_size=1, stride=1, padding=0, groups=1)
+        
+    def forward(self, x: list):
+        # x1, x2, x3 in order: middle of the backbone to final layer output
+        x1, x2, x3 = x[-3:]
+        
+        y1 = T.cat([self.upsample_x2(x3), x2], 1)
+        y1 = self.reverse1(y1)
+        
+        y2 = T.cat([self.upsample_x2(y1), x1], 1)
+        y2 = self.reverse2(y2)
+        
+        y3 = T.cat([y1, y2], 1)
+        y3 = self.reverse3(y3)
+        
+        Q = self.Q_encoder(y3).flatten(2).permute(0, 2, 1)
+        Q = Q + self.positional_embedding[:Q.shape[1]].expand(Q.shape[0], -1, -1)
+        
+        K = self.K_encoder(y3).flatten(2).permute(0, 2, 1)
+        K = K + self.positional_embedding[:K.shape[1]].expand(K.shape[0], -1, -1)
+        
+        V = self.V_encoder(x3).flatten(2).permute(0, 2, 1)
+        
+        out = nn.functional.scaled_dot_product_attention(Q, K, V)
+        out = self.output_1d_conv(out.permute(0, 2, 1))
+        
+        return out
+
 
 class AttentionHead(nn.Module):
     def __init__(self, *args, **kwargs):
         
         super(type(self), self).__init__()
         
-        self.positional_embedding = nn.Parameter(positional_embedding(kwargs["input_sequence_length"], latent_size), requires_grad=False)
-        self.internal_state = nn.Parameter(T.randn(output_length, latent_size, dtype=T.float32), requires_grad=True)
-        self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(
-                d_model=
-                latent_size, output_size, depth=depth)
+        if type(kwargs["loss_fn"]) == str:
+            self.loss_fn = getattr(T.nn.functional, kwargs["loss_fn"])
+        else:
+            self.loss_fn = kwargs["loss_fn"]
         
-    def forward(self, x: T.Tensor) -> T.Tensor:
+        input_shape = kwargs["input_sequence_length"], kwargs["input_dim"]
+        output_shape = kwargs["output_sequence_length"], kwargs["output_dim"]
+        latent_shape = kwargs["output_sequence_length"], kwargs["latent_dim"]
         
-        x = self.input_sppf(x)
-        x = x.flatten(2)
-        x = x.permute(0, 2, 1)
+        self.input_pos_embedd = nn.Parameter(positional_embedding(*input_shape), requires_grad=False)
+        self.output_pos_embedd = nn.Parameter(positional_embedding(*latent_shape), requires_grad=False)
+        self.internal_state = nn.Parameter(T.randn(latent_shape, dtype=T.float32), requires_grad=True)
         
-        x = T.cat([x, self.internal_state.expand(x.shape[0], -1, -1)], 1)
-        x = x + self.positional_embedding[:x.shape[1]].expand(x.shape[0], -1, -1)
-        
-        x = self.encoder(x)
-        
-        return x[:, -self.output_length:, :]
-
-
-class CodebookTransformerHead(nn.Module):
-    def __init__(
-        self, 
-        input_size,
-        output_size,
-        width_multiple = 0.25):
-        
-        super(type(self), self).__init__()
-        raise NotImplementedError()
-
-
-class CascadedTransformerHead(nn.Module):
-    def __init__(
-        self, 
-        input_size,
-        output_size,
-        latent_size = 1024):
-        super(type(self), self).__init__()
-        
-        raise NotImplementedError
-        
-        self.input_1d_conv = nn.Conv1d(input_size, latent_size, kernel_size=1, stride=1, padding=0, groups=1)
-        self.input_1d_conv_memory = nn.Conv1d(input_size, latent_size, kernel_size=1, stride=1, padding=0, groups=1)
-        
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, latent_size), requires_grad=False)
-        
-        self.forward_encoder = nn.Sequential(
-            nn.Linear(latent_size, latent_size),
-            nn.SiLU(),
-            nn.BatchNorm1d(latent_size),
-            nn.Linear(latent_size, latent_size),
-            nn.SiLU(),
-            nn.BatchNorm1d(latent_size)
+        self.encoder = nn.Sequential(
+            nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d_model=input_shape[1], batch_first=True, **kwargs["transformer_encoder"]["layer"]),
+                num_layers=kwargs["transformer_encoder"]["num_layers"],
+            ),
+            nn.Linear(input_shape[1], kwargs["latent_dim"]),
+            nn.LayerNorm(kwargs["latent_dim"]),
+            nn.SiLU()
         )
         
-        self.R = nn.Parameter(T.rand(output_size, dtype=T.float32), requires_grad=True)
-        
-    def forward(self, x: T.Tensor, corrections: int = 3) -> T.Tensor:
-        
-        M = self.input_1d_conv_memory(x).permute(0, 2, 1)
-        R = self.R
-        X = self.input_1d_conv(x).permute(0, 2, 1)
-        
-        for _ in range(corrections):
-            
-            q = X + self.positional_embedding.expand(X.shape[0], -1, -1)
-            k = X + self.positional_embedding.expand(X.shape[0], -1, -1)
-            v = X
-            
-            Q = X + nn.functional.scaled_dot_product_attention(q, k, v)
-            
-            print(Q.shape, M.shape, R.shape)
-            
-            y = nn.functional.scaled_dot_product_attention(Q, M, R)
-            y = y + Q
-            y = self.forward_encoder(y)
-            
-        return out
-
-
-class DeformableAttentionHead(nn.Module):
-    def __init__(
-        self, 
-        input_size,
-        output_size,
-        latent_size = 1024):
-        
-        raise NotImplementedError()
-        super(type(self), self).__init__()
-        
-        self.positional_embedding = nn.Parameter(positional_embedding(20*20, input_size), requires_grad=False)
-        
-        self.deformable_attn = DeformableAttention(
-            dim = input_size,
-            dim_head = input_size // 8,  # dimension per head
-            heads = 8,
-            dropout = 0.,
-            downsample_factor = 4,       # downsample factor (r in paper)
-            offset_scale = 4,            # scale of offset, maximum offset
-            offset_groups = None,        # number of offset groups, should be multiple of heads
-            offset_kernel_size = 6,
+        self.decoder_1 = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(d_model=kwargs["latent_dim"], batch_first=True, **kwargs["transformer_decoder"]["layer"]), 
+            num_layers=kwargs["transformer_decoder"]["num_layers"]
         )
-    
-    def forward(self, x: T.Tensor) -> T.Tensor:
-        x = x.reshape(x.shape[0], x.shape[1], int(math.sqrt(x.shape[2])), int(math.sqrt(x.shape[2])))
-        out = self.deformable_attn(x)
-        return out
+        self.decoder_2 = nn.Sequential(
+            nn.Linear(kwargs["latent_dim"], output_shape[1]),
+            nn.LayerNorm(output_shape[1]),
+            nn.SiLU()
+        )
+        
+    def forward(self, x: T.Tensor, tgt_mask: T.Tensor = None):
+        
+        z = x + self.input_pos_embedd
+        z = self.encoder(z)
+        
+        i_state = (self.internal_state + self.output_pos_embedd).expand(z.shape[0], -1, -1)
+        y = self.decoder_1(i_state, z, tgt_mask=tgt_mask)
+        y = self.decoder_2(y)
+        
+        return y

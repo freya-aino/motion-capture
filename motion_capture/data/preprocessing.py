@@ -1,30 +1,40 @@
-import torchvision.transforms as image_transforms
+from torchvision.transforms import v2
 
 # also look at albumenations https://github.com/albumentations-team/albumentations
 
 ImageAugmentations = {
-    "BASIC": image_transforms.RandomChoice([
-            image_transforms.AugMix(),
-            
-            image_transforms.RandomChoice([
-                image_transforms.ColorJitter(brightness = 0.2),
-                image_transforms.ColorJitter(contrast = 0.2),
-                image_transforms.ColorJitter(saturation = 0.2),
-                image_transforms.ColorJitter(brightness = 0.2, contrast = 0.2),
-                image_transforms.ColorJitter(brightness = 0.2, saturation = 0.2),
-                image_transforms.ColorJitter(saturation = 0.2, contrast = 0.2),
-                image_transforms.ColorJitter(brightness = 0.2, contrast = 0.2, saturation = 0.2),
-            ]),
-            image_transforms.RandomChoice([
-                image_transforms.GaussianBlur(11),
-                image_transforms.GaussianBlur(101),
-            ]),
-            
-        ]),
-    "AllThePapers": image_transforms.RandomChoice([
-            image_transforms.AugMix(),
-            image_transforms.AutoAugment(),
-            image_transforms.RandAugment(),
-        ])
+    "INPLACE": v2.RandomChoice([
+        v2.ColorJitter(
+            brightness = 0.2, 
+            contrast = 0.2, 
+            saturation = 0.2,
+            hue = 0.2
+        ),
+        v2.GaussianBlur(
+            kernel_size=11,
+            sigma = (0.1, 5.0)
+        ),
+        v2.ElasticTransform(
+            alpha = 250,
+            sigma = 5
+        ),
+        v2.RandomInvert(
+            p = 1
+        ),
+        v2.RandomPosterize(
+            bits = 2,
+            p = 1
+        ),
+        v2.RandomAdjustSharpness(
+            sharpness_factor = 2,
+            p = 1
+        ),
+        v2.RandomAutocontrast(
+            p = 1
+        ),
+        v2.JPEG(
+            quality = (5, 50)
+        )
+    ])
 }
 
