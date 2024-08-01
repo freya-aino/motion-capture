@@ -155,25 +155,29 @@ def run(conf: DictConfig):
     
     
     # VQVAE DATA
+    from motion_capture.data.datasets import COCO2017PersonKeypointsDataset, COCOPanopticsObjectDetection, HAKELarge
+    
+    coco_dataset = COCOPanopticsObjectDetection(
+        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
+        panoptics_path = "//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations",
+        image_shape_WH=image_shape,
+        max_number_of_instances=100
+    ) # 120k images
+    
+    person_keypoints_dataset = COCO2017PersonKeypointsDataset(
+        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
+        annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
+        image_shape_WH = image_shape,
+        min_person_bbox_size = 100
+    ) # 70k images
+    
+    hake_dataset = HAKELarge(
+        annotation_path = "\\\\192.168.2.206\\data\\datasets\\HAKE\\Annotations",
+        image_path = "\\\\192.168.2.206\\data\\datasets\\HAKE-large",
+        image_shape_WH = image_shape,
+    ) # 100k images
     
     # "\\192.168.2.206\data\datasets\CelebA\img\img_align_celeba\img_celeba" # 200k images
-    
-    # person_keypoints_dataset = COCO2017PersonKeypointsDataset(
-    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-    #     image_shape_WH = image_shape,
-    #     min_person_bbox_size = 100
-    # ) # 70k images
-    
-    # person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
-    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-    #     image_shape_WH=image_shape,
-    #     max_num_persons=10,
-    #     max_segmentation_points=100
-    # ) # 56k images
-    
-    # HAKE Large # 100k images
     
     
     
