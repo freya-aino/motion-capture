@@ -34,7 +34,7 @@ class VisionModel(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         
-        self.backbone = timm.create_model(backbone, pretrained=False, features_only=True)
+        self.backbone = timm.create_model(backbone, pretrained=True, features_only=True)
         self.vqvae = vqvae = VQVAE(**vqvae)
         
         self.heads = nn.ModuleDict({k: VQVAEHead(**v) for k, v in heads.items()})

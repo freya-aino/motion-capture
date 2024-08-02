@@ -109,6 +109,10 @@ class DataModule(pl.LightningDataModule):
 
 # ---------------------------------------------------------------------------------------------------------------
 
+def collate_fn(batch):
+    return T.stack([b[0] for b in batch])
+
+
 @hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
 def run(conf: DictConfig):
     
@@ -133,19 +137,11 @@ def run(conf: DictConfig):
 #     else:
 #         model = model_class(**model_cfg, **model_training_cfg)
     
-    model = VisionModel(**conf.model)
-    model.backbone = model.backbone.eval()
+    # model = VisionModel(**conf.model)
+    # backbone = model.backbone.eval()
     
     # --------------- data setup ----------------
     print("initialize dataset ...")
-    
-    # person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
-    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-    #     image_shape_WH=(224, 224),
-    #     max_num_persons=10,
-    #     max_segmentation_points=100
-    # )
     
     # datamodule = DataModule(
     #     dataset = person_instance_dataset,
@@ -155,7 +151,10 @@ def run(conf: DictConfig):
     
     
     # VQVAE DATA
-    from motion_capture.data.datasets import COCO2017PersonKeypointsDataset, COCOPanopticsObjectDetection, HAKELarge
+    from motion_capture.data.datasets import COCO2017PersonKeypointsDataset, COCOPanopticsObjectDetection, HAKELarge, CelebA
+    from motion_capture.data.datasets import CombinedDataset
+    
+    image_shape = (224, 224)
     
     coco_dataset = COCOPanopticsObjectDetection(
         image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
@@ -177,11 +176,64 @@ def run(conf: DictConfig):
         image_shape_WH = image_shape,
     ) # 100k images
     
-    # "\\192.168.2.206\data\datasets\CelebA\img\img_align_celeba\img_celeba" # 200k images
+    celeba_dataset = CelebA(
+        annotatin_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\Anno",
+        image_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\img\\img_align_celeba\\img_celeba",
+        image_shape_WH = image_shape
+    )
     
+    from torch.utils import data
     
+    dataloader = data.DataLoader(
+        dataset = CombinedDataset([
+            coco_dataset,
+            person_keypoints_dataset,
+            hake_dataset,
+            celeba_dataset
+        ]),
+        batch_size = 250,
+        num_workers = 1,
+        collate_fn = collate_fn, 
+        shuffle = False
+    )
     
+    print(f"dataset size: {len(dataloader)}")
     
+    import tqdm
+    import timm
+    
+    if "convnextv2_atto.fcmae_ft_in1k.pth" in os.listdir("./timm_models"):
+        student_backbone = T.load("./timm_models/convnextv2_atto.fcmae_ft_in1k.pth")
+    else:
+        student_backbone = timm.create_model("timm/convnextv2_atto.fcmae_ft_in1k", pretrained=True, features_only=True).eval().to("cuda")
+        T.save(student_backbone, "./timm_models/convnextv2_atto.fcmae_ft_in1k.pth")
+    
+    # if "convnextv2_large.fcmae_ft_in22k_in1k.pth" in os.listdir("./timm_models"):
+    #     teacher_backbone = T.load("./timm_models/convnextv2_large.fcmae_ft_in22k_in1k.pth")
+    # else:
+    #     teacher_backbone = timm.create_model("timm/convnextv2_large.fcmae_ft_in22k_in1k", pretrained=True, features_only=True).eval().to("cuda")
+    #     T.save(teacher_backbone, "./timm_models/convnextv2_large.fcmae_ft_in22k_in1k.pth")
+    
+    with T.no_grad():
+        
+        dataloader_iter = iter(dataloader)
+        
+        for e in tqdm.tqdm(range(len(dataloader)), total=len(dataloader)):
+            try:
+                
+                batch = next(dataloader_iter)
+                
+                images = batch.to("cuda")
+                
+                student_embedding = student_backbone(images)[-1]
+                # teacher_embedding = teacher_backbone(images)[-1]
+                
+                T.save(student_embedding, f"./dataset_embeddings/convnextv2_atto.fcmae_ft_in1k/{e}.pth")
+                # T.save(teacher_embedding, f"./dataset_embeddings/convnextv2_large.fcmae_ft_in22k_in1k/{e}.pth")
+                
+            except Exception as e:
+                print(e)
+                continue
     
 # @hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
 # def run(cfg: DictConfig):

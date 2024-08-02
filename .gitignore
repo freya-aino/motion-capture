@@ -7,3 +7,5 @@ lightning_logs/
 logs/
 checkpoints/
 outputs/
+dataset_embeddings/
+timm_models/

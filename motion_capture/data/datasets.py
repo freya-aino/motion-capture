@@ -1267,6 +1267,9 @@ class HAKELarge(data.Dataset):
         if len(v["labels"]) == 0:
             return None
         
+        if v["dataset"] == "vcoco":
+            return None
+        
         return {
             "imagePath": os.path.join(self.image_path, v["dataset"], k),
             "humanBboxes": T.stack([T.tensor(lab["human_bbox"]) for lab in v["labels"]]).to(dtype=T.float32).reshape(-1, 2, 2),
