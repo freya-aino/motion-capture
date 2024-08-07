@@ -77,7 +77,6 @@ class CombinedDataset(data.Dataset):
 
 # ------------------------------------------------------------------------
 
-
 class CelebA(data.Dataset):
     def __init__(self, annotatin_path, image_path, image_shape_WH):
         super().__init__()
@@ -1110,13 +1109,14 @@ class COCOPanopticsObjectDetection(data.Dataset):
 
 class COCO2017PersonWholeBodyDataset(data.Dataset):
     
-    def __init__(self, annotations_folder_path: str, image_folder_path: str, image_shape_WH: tuple, min_person_bbox_size: int = 100):
+    def __init__(self, annotations_folder_path: str, image_folder_path: str, image_shape_WH: tuple, min_person_bbox_size: int = 100, padding: int = 20):
         super().__init__()
         
         self.annotations_folder_path = annotations_folder_path
         self.image_folder_path = image_folder_path
         self.image_shape = image_shape_WH
         self.min_person_bbox_size = min_person_bbox_size
+        self.padding = padding
         
         with open(os.path.join(annotations_folder_path, "coco_wholebody_val_v1.0.json"), "r") as f:
             val_json = json.load(f)
@@ -1206,6 +1206,10 @@ class COCO2017PersonWholeBodyDataset(data.Dataset):
         all_keypoints = datapoint["allKeypoints"]
         all_visibilities = datapoint["allKeypointsVisibility"]
         all_validities = datapoint["allKeypointsValidity"]
+        
+        # add padding to bounding boxes
+        person_bbox[0] -= self.padding
+        person_bbox[1] += self.padding * 2
         
         # crop persons
         person_crop = crop(image, person_bbox[0][1], person_bbox[0][0], person_bbox[1][1], person_bbox[1][0])

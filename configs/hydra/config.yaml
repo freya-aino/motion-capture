@@ -1,6 +1,5 @@
 defaults:
   - /experiment: experiment-1
   - /training: default-training
-  - /model: default-model
-  - /data: default-data
+  - /model: basic-model
   - _self_

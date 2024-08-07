@@ -2,5 +2,5 @@ defaults:
   - defaults
 
 # overrides
-experimentName: "bboxFinetune"
-runName: "run-1"
+experimentName: "full-image-experiment"
+runName: "test-run"

@@ -3,17 +3,12 @@ import torch as T
 import torch.nn as nn
 import pytorch_lightning as pl
 import hydra
-
-import torch.utils.data as Tdata
-import pytorch_lightning as pl
+import tqdm
+import timm
 
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import MLFlowLogger
 from omegaconf import DictConfig, OmegaConf
-
-from motion_capture.data.preprocessing import ImageAugmentations
-from motion_capture.model.models import VisionModel
-from motion_capture.data.datasets import COCO2017GlobalPersonInstanceSegmentation
 
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -43,75 +38,7 @@ def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.
     print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
     return best_model["model_path"]
 
-class DataModule(pl.LightningDataModule):
-    
-    def __init__(
-        self, 
-        dataset: Tdata.Dataset,
-        image_augmentation: str,
-        batch_size: int,
-        train_val_test_split: tuple[float, float, float],
-        num_train_workers: int,
-        num_val_workers: int):
-        
-        super().__init__()
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.train_val_test_split = train_val_test_split
-        self.num_train_workers = num_train_workers
-        self.num_val_workers = num_val_workers
-        
-        self.image_augmentation = ImageAugmentations[image_augmentation]
-        
-    def setup(self):
-        splits = Tdata.random_split(
-            dataset = self.dataset, 
-            lengths = self.train_val_test_split,
-        )
-        self.train_dataset = splits[0]
-        self.val_dataset = splits[1]
-        self.test_dataset = splits[2]
-        
-    def collate_fn(self, batch):
-        batch = [b for b in batch if b is not None]
-        if len(batch) == 0:
-            return None
-        return T.stack(batch)
-        
-    def train_dataloader(self):
-        return Tdata.DataLoader(
-            self.train_dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True,
-            collate_fn=self.collate_fn,
-            num_workers=self.num_train_workers,
-            persistent_workers=True if self.num_train_workers > 0 else False,
-            pin_memory=True
-        )
-    
-    def val_dataloader(self):
-        return Tdata.DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            collate_fn=self.collate_fn,
-            num_workers=self.num_val_workers,
-            persistent_workers=True if self.num_val_workers > 0 else False,
-            pin_memory=True
-        )
-    
-    def test_dataloader(self):
-        return Tdata.DataLoader(
-            self.test_dataset, 
-            batch_size=self.batch_size, 
-            collate_fn=self.collate_fn,
-            shuffle=False,
-        )
-
 # ---------------------------------------------------------------------------------------------------------------
-
-def collate_fn(batch):
-    return T.stack([b[0] for b in batch])
-
 
 @hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
 def run(conf: DictConfig):
@@ -120,6 +47,7 @@ def run(conf: DictConfig):
     
     # --------------- trianing setup ----------------
     print("initialize training ...")
+    
     pl.seed_everything(conf.experiment.randomSeed)
     
     logger = MLFlowLogger(**conf.training.logger)
@@ -128,133 +56,71 @@ def run(conf: DictConfig):
     
     # --------------- model setup ----------------
     print("initialize model ...")
-    #     if experiment.continue_training:
-#         best_ckpt_pth = models.find_best_checkpoint_path(experiment.checkpoint_callback.dirpath)
-#         if best_ckpt_pth:
-#             model = model_class.load_from_checkpoint(best_ckpt_pth)
-#         else:
-#             model = model_class(**model_cfg, **model_training_cfg)
-#     else:
-#         model = model_class(**model_cfg, **model_training_cfg)
     
-    # model = VisionModel(**conf.model)
-    # backbone = model.backbone.eval()
+    from motion_capture.model.modules import VisionModule
+    
+    model = VisionModule(**conf.model)
+    model = model.train().to("cuda")
     
     # --------------- data setup ----------------
     print("initialize dataset ...")
     
-    # datamodule = DataModule(
-    #     dataset = person_instance_dataset,
-    #     **conf.training.data_module
+    from motion_capture.data.datamodules import DataModule
+    from motion_capture.data.datasets import COCO2017GlobalPersonInstanceSegmentation
+    
+    ## -------------- FACE BOUNDING BOX ----------------
+    ## -------------- FACE INDICATORS ----------------
+    
+    # celeba_dataset = CelebA(
+    #     annotatin_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\Anno",
+    #     image_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\img\\img_align_celeba\\img_celeba",
+    #     image_shape_WH = image_shape
+    # )
+    # wider_face_dataset = WIDERFace(
+    #     path="//192.168.2.206/data/datasets/WIDER-Face",
+    #     image_shape_WH=image_shape,
+    #     max_number_of_faces=10
+    # )
+    # wflw_dataset = WFLW(
+    #     image_shape_WH=image_shape, 
+    #     path="//192.168.2.206/data/datasets/WFLW",
+    #     max_number_of_faces=10
+    # )
+    
+    ## -------------- PERSON BOUNDING BOX ----------------
+    ## -------------- PERSON SEGMENTATION ----------------
+    
+    # person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
+    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
+    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
+    #     image_shape_WH=image_shape,
+    #     max_num_persons=10,
+    #     max_segmentation_points=100
+    # )
+    
+    ## -------------- CROP PERSON KEYPOINTS ----------------
+    
+    # coco_wholebody_dataset = COCO2017PersonWholeBodyDataset(
+    #     annotations_folder_path="//192.168.2.206/data/datasets/COCO2017/annotations",
+    #     image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
+    #     image_shape_WH=image_shape
     # )
     
     
     
-    # VQVAE DATA
-    from motion_capture.data.datasets import COCO2017PersonKeypointsDataset, COCOPanopticsObjectDetection, HAKELarge, CelebA
-    from motion_capture.data.datasets import CombinedDataset
     
-    image_shape = (224, 224)
-    
-    coco_dataset = COCOPanopticsObjectDetection(
-        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-        panoptics_path = "//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations",
-        image_shape_WH=image_shape,
-        max_number_of_instances=100
-    ) # 120k images
-    
-    person_keypoints_dataset = COCO2017PersonKeypointsDataset(
-        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-        annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-        image_shape_WH = image_shape,
-        min_person_bbox_size = 100
-    ) # 70k images
-    
-    hake_dataset = HAKELarge(
-        annotation_path = "\\\\192.168.2.206\\data\\datasets\\HAKE\\Annotations",
-        image_path = "\\\\192.168.2.206\\data\\datasets\\HAKE-large",
-        image_shape_WH = image_shape,
-    ) # 100k images
-    
-    celeba_dataset = CelebA(
-        annotatin_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\Anno",
-        image_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\img\\img_align_celeba\\img_celeba",
-        image_shape_WH = image_shape
+    DataModule(
+        dataset = 
+        **conf.training.data_module
     )
     
-    from torch.utils import data
     
-    dataloader = data.DataLoader(
-        dataset = CombinedDataset([
-            coco_dataset,
-            person_keypoints_dataset,
-            hake_dataset,
-            celeba_dataset
-        ]),
-        batch_size = 250,
-        num_workers = 1,
-        collate_fn = collate_fn, 
-        shuffle = False
-    )
     
-    print(f"dataset size: {len(dataloader)}")
     
-    import tqdm
-    import timm
     
-    if "convnextv2_atto.fcmae_ft_in1k.pth" in os.listdir("./timm_models"):
-        student_backbone = T.load("./timm_models/convnextv2_atto.fcmae_ft_in1k.pth")
-    else:
-        student_backbone = timm.create_model("timm/convnextv2_atto.fcmae_ft_in1k", pretrained=True, features_only=True).eval().to("cuda")
-        T.save(student_backbone, "./timm_models/convnextv2_atto.fcmae_ft_in1k.pth")
+    # print(f"dataset size: {len(dataloader)}")
+    # trainer.fit(model, dataloader)
     
-    # if "convnextv2_large.fcmae_ft_in22k_in1k.pth" in os.listdir("./timm_models"):
-    #     teacher_backbone = T.load("./timm_models/convnextv2_large.fcmae_ft_in22k_in1k.pth")
-    # else:
-    #     teacher_backbone = timm.create_model("timm/convnextv2_large.fcmae_ft_in22k_in1k", pretrained=True, features_only=True).eval().to("cuda")
-    #     T.save(teacher_backbone, "./timm_models/convnextv2_large.fcmae_ft_in22k_in1k.pth")
-    
-    with T.no_grad():
-        
-        dataloader_iter = iter(dataloader)
-        
-        for e in tqdm.tqdm(range(len(dataloader)), total=len(dataloader)):
-            try:
-                
-                batch = next(dataloader_iter)
-                
-                images = batch.to("cuda")
-                
-                student_embedding = student_backbone(images)[-1]
-                # teacher_embedding = teacher_backbone(images)[-1]
-                
-                T.save(student_embedding, f"./dataset_embeddings/convnextv2_atto.fcmae_ft_in1k/{e}.pth")
-                # T.save(teacher_embedding, f"./dataset_embeddings/convnextv2_large.fcmae_ft_in22k_in1k/{e}.pth")
-                
-            except Exception as e:
-                print(e)
-                continue
-    
-# @hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
-# def run(cfg: DictConfig):
-#     # ---------------------------------------------------------------------------------------------------------------
-#     print("initialize dataset ...")
-#     datamodule_cfg["image_augmentation"] = preprocessing.ImageAugmentations[datamodule_cfg["image_augmentation"]]
-#     selected_datasets = []
-#     for dataset_k in data_cfg:
-#         dataset_class = getattr(datasets, data_cfg[dataset_k]["class"])
-#         selected_datasets.append(dataset_class(**data_cfg[dataset_k]["kwargs"]))
-#     daatset = datasets.CombinedDataset(selected_datasets)
-#     data_module = data_module_class(dataset = daatset, **datamodule_cfg)
-#     data_module.setup()
-#     # ---------------------------------------------------------------------------------------------------------------
-#     print("fitting model ...")
-#     trainer.fit(model=model, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
-#     # ---------------------------------------------------------------------------------------------------------------
-#     print("testing model ...")
-#     trainer.test(model=model, dataloaders=data_module.test_dataloader())
-    
-#     return trainer.callback_metrics["test_loss"].item()
 
 if __name__ == "__main__":
     

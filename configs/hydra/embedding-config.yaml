@@ -1,4 +1,0 @@
-encoder: "convnextv2_atto.fcmae_ft_in1k"
-image_shape: [224, 224]
-batch_size: 250
-num_workers: 1

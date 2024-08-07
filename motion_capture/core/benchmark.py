@@ -2,6 +2,7 @@ import time
 import torch as T
 import torch.nn as nn
 
+from tqdm import tqdm
 
 
 def model_speedtest(
@@ -25,7 +26,7 @@ def model_speedtest(
     
     with T.inference_mode():
         dt = time.perf_counter()
-        for _ in range(ntests):
+        for _ in tqdm(range(ntests), desc="speedtest"):
             model(test_input)
             T.cuda.synchronize()
         print(f"\tfps: {ntests / (time.perf_counter() - dt)}")
