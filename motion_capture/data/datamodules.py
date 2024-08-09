@@ -9,34 +9,27 @@ from motion_capture.model.models import VQVAE
 
 class DataModule(pl.LightningDataModule):
     
-    def __init__(self, dataset, batch_size, image_augmentation, train_val_test_split, num_workers):
+    def __init__(self, dataset, y_key, batch_size, image_augmentation, train_val_split, num_workers):
         super().__init__()
         self.dataset = dataset
+        self.y_key = y_key
         self.batch_size = batch_size
-        self.train_val_test_split = train_val_test_split
+        self.train_val_split = train_val_split
         self.num_workers = num_workers
         self.image_augmentation = ImageAugmentations[image_augmentation]
         
     def collate_fn(self, batch):
         x = T.stack([self.image_augmentation(b[0]) for b in batch])
-        y = {}
-        for b in batch:
-            for k, v in b[1].items():
-                if k not in y:
-                    y[k] = []
-                y[k].append(v)
-        for k in y:
-            y[k] = T.stack(y[k])
+        y = T.stack([b[1][self.y_key] for b in batch])
         return x, y
         
-    def setup(self):
+    def setup(self, stage):
         splits = Tdata.random_split(
             dataset = self.dataset, 
-            lengths = self.train_val_test_split,
+            lengths = self.train_val_split,
         )
         self.train_dataset = splits[0]
         self.val_dataset = splits[1]
-        self.test_dataset = splits[2]
         
     def train_dataloader(self):
         return Tdata.DataLoader(
@@ -44,8 +37,8 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=True,
             collate_fn=self.collate_fn,
-            num_workers=self.num_train_workers,
-            persistent_workers=True if self.num_train_workers > 0 else False,
+            num_workers=self.num_workers,
+            # persistent_workers=True if self.num_workers > 0 else False,
             pin_memory=True
         )
     
@@ -54,16 +47,7 @@ class DataModule(pl.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
-            num_workers=self.num_val_workers,
-            persistent_workers=True if self.num_val_workers > 0 else False,
+            num_workers=self.num_workers,
+            # persistent_workers=True if self.num_workers > 0 else False,
             pin_memory=True
         )
-    
-    def test_dataloader(self):
-        return Tdata.DataLoader(
-            self.test_dataset, 
-            batch_size=self.batch_size, 
-            collate_fn=self.collate_fn,
-            shuffle=False,
-        )
-

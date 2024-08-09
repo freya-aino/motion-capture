@@ -205,7 +205,7 @@ class WIDERFace(data.Dataset):
             "illumination": normal_illumination,
             "validity": is_valid,
             "occlusion": occlusion,
-            "typical_pose": typical_pose
+            "typicalPose": typical_pose
         }
 
 class WFLW(data.Dataset):
@@ -486,7 +486,8 @@ class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
         annotation_folder_path: str,
         image_shape_WH: tuple,
         max_num_persons: int,
-        max_segmentation_points: int = 100):
+        max_segmentation_points: int = 100,
+        min_bbox_size: int = 50):
         
         super().__init__()
         
@@ -499,94 +500,75 @@ class COCO2017GlobalPersonInstanceSegmentation(data.Dataset):
         with open(os.path.join(annotation_folder_path, "person_keypoints_val2017.json"), "r") as f:
             val_json = json.load(f)
         
-        self.image_path_map = {}
-        for image in train_json["images"]:
-            self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
-        for image in val_json["images"]:
-            self.image_path_map[image["id"]] = os.path.join(image_folder_path, image["file_name"])
+        images = pd.DataFrame.from_records((*train_json["images"], *val_json["images"]))
+        annotations = pd.DataFrame.from_records((*train_json["annotations"], *val_json["annotations"]))
         
-        self.all_datapoints = {}
-        for annotation in (*train_json["annotations"], *val_json["annotations"]):
-            if annotation["image_id"] not in self.image_path_map:
-                continue
-            
-            formatted_annotation = self.format_datapoint(annotation)
-            if formatted_annotation is None:
-                continue
-            
-            if annotation["image_id"] not in self.all_datapoints:
-                self.all_datapoints[annotation["image_id"]] = []
-            self.all_datapoints[annotation["image_id"]].append(formatted_annotation)
+        self.all_datapoints = pd.merge(
+            left = annotations,
+            right = images,
+            left_on = "image_id",
+            right_on = "id",
+        )
         
-        keys = list(self.all_datapoints.keys())
-        for k in keys:
-            if len(self.all_datapoints[k]) > max_num_persons:
-                self.all_datapoints.pop(k)
+        self.all_datapoints["image_path"] = image_folder_path + "/" + self.all_datapoints["file_name"]
+        self.all_datapoints = self.all_datapoints[self.all_datapoints["bbox"].apply(lambda x: x[2] * x[3] > (min_bbox_size**2))]
+        self.all_datapoints = self.all_datapoints[self.all_datapoints["segmentation"].apply(type) == list]
         
-        self.all_datapoints = list(self.all_datapoints.values())
-    
-    def format_datapoint(self, datapoint):
+        self.all_datapoints.drop(columns=[
+            "num_keypoints", "area", "iscrowd", "keypoints",
+            "image_id", "category_id", "id_x", "license", "file_name",
+            "coco_url", "height", "width", "date_captured", "flickr_url", "id_y"
+            ], inplace=True)
         
-        # remove etries with multiple segmentations or if not list
-        if type(datapoint["segmentation"]) != list:
-            return None
-        if len(datapoint["segmentation"]) == 0 or len(datapoint["segmentation"]) > 1:
-            return None
-        
-        segmentation = T.tensor(datapoint["segmentation"][0]).reshape(-1, 2)
-        
-        if segmentation.shape[0] > self.max_segmentation_points:
-            return None
-        
-        return {
-            "imagePath": self.image_path_map[datapoint["image_id"]],
-            "bbox": T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2),
-            "segmentation": segmentation,
-        }
+        self.all_datapoints = self.all_datapoints.groupby("image_path")
+        person_count_mask = self.all_datapoints.size() <= max_num_persons
+        self.all_datapoints = self.all_datapoints.aggregate(lambda x: x.tolist())
+        self.all_datapoints = self.all_datapoints[person_count_mask]
+        self.all_datapoints.reset_index(inplace=True)
     
     def __len__(self):
         return len(self.all_datapoints)
     
     def __getitem__(self, idx):
-        datapoints = self.all_datapoints[idx]
+        dp = self.all_datapoints.iloc[idx]
         
-        full_image = read_image(datapoints[0]["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        image = read_image(dp["image_path"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        bboxes = dp["bbox"]
+        segmentations = dp["segmentation"]
         
-        bboxes = []
-        segmentations = []
-        for datapoint in datapoints:
-            bbox = datapoint["bbox"]
-            segmentation = datapoint["segmentation"]
-            
-            # resize bbox, keypoints and segmentation to now full image
-            full_scaled_bbox = scale_points(bbox, full_image.shape[::-1][:2], [1, 1])
-            full_scaled_segmentation = scale_points(segmentation, full_image.shape[::-1][:2], [1, 1])
-            full_scaled_segmentation = pad(full_scaled_segmentation[:self.max_segmentation_points], (0, 0, 0, max(0, self.max_segmentation_points - full_scaled_segmentation.shape[0])), value=0)
-            
-            full_scaled_bbox[1, :] = full_scaled_bbox[0, :] + full_scaled_bbox[1, :]
-            
-            bboxes.append(full_scaled_bbox)
-            segmentations.append(full_scaled_segmentation)
+        bboxes_ = T.zeros(self.max_num_persons, 4)
         
-        # padding
-        bboxes = pad(T.stack(bboxes)[:self.max_num_persons].reshape(-1, 4), (0, 0, 0, max(0, self.max_num_persons - len(bboxes))), value=0)
-        segmentations = pad(T.stack(segmentations)[:self.max_num_persons], (0, 0, 0, 0, 0, max(0, self.max_num_persons - len(segmentations))), value=0)
+        bboxes = T.tensor(bboxes, dtype=T.float32).reshape(-1, 2, 2) # ([scale_points(T.tensor(bbox).reshape(2, 2), self.image_shape[::-1], [1, 1]) for bbox in bboxes])
+        bboxes = scale_points(bboxes, image.shape[::-1][:2], [1, 1])
+        bboxes[:, 1, :] += bboxes[:, 0, :]
+        bboxes = bboxes.reshape(-1, 4)
         
-        # validity mask
-        bbox_validity_mask = T.zeros(self.max_num_persons).bool()
-        bbox_validity_mask[(bboxes != 0).all(-1)] = True
-        segmentation_validity_mask = T.zeros(self.max_num_persons, self.max_segmentation_points).bool()
-        segmentation_validity_mask[(segmentations != 0).all(-1)] = True
+        bboxes_[:bboxes.shape[0]] = bboxes[:]
+        
+        segmentations_ = T.zeros(self.max_num_persons, self.max_segmentation_points, 2)
+        for seg in segmentations:
+            seg = T.cat([T.tensor(s, dtype=T.float32) for s in seg])
+            seg = seg.flatten().reshape(-1, 2)
+            seg = seg[:self.max_segmentation_points]
+            seg = scale_points(seg, image.shape[::-1][:2], [1, 1])
+            seg = pad(seg, (0, 0, 0, max(0, self.max_segmentation_points - seg.shape[0])), value=0)
+            segmentations_[:seg.shape[0]] = seg[:]
+        
+        # # validity mask
+        # bbox_validity_mask = T.zeros(self.max_num_persons).bool()
+        # bbox_validity_mask[(bboxes != 0).all(-1)] = True
+        # segmentation_validity_mask = T.zeros(self.max_num_persons, self.max_segmentation_points).bool()
+        # segmentation_validity_mask[(segmentations != 0).all(-1)] = True
         
         # resize full image
-        full_image = resize(full_image, self.image_shape[::-1]) / 255
+        image = resize(image, self.image_shape[::-1]) / 255
         
         # return concatenation of all datapoints
-        return full_image, {
-            "bboxes": bboxes,
-            "bboxValidity": bbox_validity_mask,
-            "segmentations": segmentations,
-            "segmentationValidity": segmentation_validity_mask
+        return image, {
+            "bboxes": bboxes_,
+            "bboxValidity": 0,
+            "segmentations": segmentations_,
+            "segmentationValidity": 0
         }
 
 class COCO2017PersonKeypointsDataset(data.Dataset):
@@ -1106,8 +1088,7 @@ class COCOPanopticsObjectDetection(data.Dataset):
         
 #         return formatted_datapoints
 
-
-class COCO2017PersonWholeBodyDataset(data.Dataset):
+class COCO2017PersonWholeBody(data.Dataset):
     
     def __init__(self, annotations_folder_path: str, image_folder_path: str, image_shape_WH: tuple, min_person_bbox_size: int = 100, padding: int = 20):
         super().__init__()
@@ -1115,97 +1096,58 @@ class COCO2017PersonWholeBodyDataset(data.Dataset):
         self.annotations_folder_path = annotations_folder_path
         self.image_folder_path = image_folder_path
         self.image_shape = image_shape_WH
-        self.min_person_bbox_size = min_person_bbox_size
         self.padding = padding
+        
+        area = min_person_bbox_size ** 2
         
         with open(os.path.join(annotations_folder_path, "coco_wholebody_val_v1.0.json"), "r") as f:
             val_json = json.load(f)
         with open(os.path.join(annotations_folder_path, "coco_wholebody_train_v1.0.json"), "r") as f:
             train_json = json.load(f)
         
-        # image id to path map
-        self.image_id_path_map = {}
-        for dp in (*train_json["images"], *val_json["images"]):
-            self.image_id_path_map[dp["id"]] = os.path.join(self.image_folder_path, dp["file_name"])
+        images = pd.DataFrame.from_records((*train_json["images"], *val_json["images"]))
+        annotations = pd.DataFrame.from_records((*train_json["annotations"], *val_json["annotations"]))
+        # images = pd.DataFrame.from_records(val_json["images"])
+        # annotations = pd.DataFrame.from_records(val_json["annotations"])
         
-        self.all_datapoints = []
-        for dp in (*train_json["annotations"], *val_json["annotations"]):
-            formatted_datapoint = self.format_datapoint(dp)
-            if formatted_datapoint is not None:
-                self.all_datapoints.append(formatted_datapoint)
-    
-    def format_datapoint(self, datapoint):
+        self.all_datapoints = pd.merge(annotations, images, right_on="id", left_on="image_id")
+        self.all_datapoints["image_path"] = self.image_folder_path + "/" + self.all_datapoints["file_name"]
+        self.all_datapoints = self.all_datapoints[self.all_datapoints["bbox"].map(lambda x: x[2] * x[3] > area)]
         
-        # drop if bbox not large enough
-        if datapoint["bbox"][2] < self.min_person_bbox_size or datapoint["bbox"][3] < self.min_person_bbox_size:
-            return None
+        validity_mask = (self.all_datapoints["num_keypoints"] != 0) | self.all_datapoints["face_valid"] | self.all_datapoints["lefthand_valid"] | self.all_datapoints["righthand_valid"] | self.all_datapoints["foot_valid"]
+        self.all_datapoints = self.all_datapoints[validity_mask]
         
-        body_keypoints = T.tensor(datapoint["keypoints"], dtype=T.float32).reshape(-1, 3)
-        face_kpts = T.tensor(datapoint["face_kpts"], dtype=T.float32).reshape(-1, 3)
-        lefthand_kpts = T.tensor(datapoint["lefthand_kpts"], dtype=T.float32).reshape(-1, 3)
-        righthand_kpts = T.tensor(datapoint["righthand_kpts"], dtype=T.float32).reshape(-1, 3)
-        foot_kpts = T.tensor(datapoint["foot_kpts"], dtype=T.float32).reshape(-1, 3)
-        person_bbox = T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2)
-        face_bbox = T.tensor(datapoint["face_box"], dtype=T.int16).reshape(2, 2)
-        left_hand_bbox = T.tensor(datapoint["lefthand_box"], dtype=T.int16).reshape(2, 2)
-        right_hand_bbox = T.tensor(datapoint["righthand_box"], dtype=T.int16).reshape(2, 2)
-        # face_valid = T.tensor(datapoint["face_valid"], dtype=T.bool)
-        # lefthand_valid = T.tensor(datapoint["lefthand_valid"], dtype=T.bool)
-        # righthand_valid = T.tensor(datapoint["righthand_valid"], dtype=T.bool)
+        self.all_datapoints.reset_index(drop=True, inplace=True)
         
-        body_kpts_visibility = body_keypoints[:, 2] == 2
-        face_kpts_visibility = face_kpts[:, 2] == 2
-        lefthand_kpts_visibility = lefthand_kpts[:, 2] == 2
-        righthand_kpts_visibility = righthand_kpts[:, 2] == 2
-        foot_kpts_visibility = foot_kpts[:, 2] == 2
+    def format_keypoints(self, datapoint):
+        kpts = T.cat([
+            T.tensor(datapoint["keypoints"]).reshape(-1, 3),
+            T.tensor(datapoint["face_kpts"]).reshape(-1, 3),
+            T.tensor(datapoint["lefthand_kpts"]).reshape(-1, 3),
+            T.tensor(datapoint["righthand_kpts"]).reshape(-1, 3),
+            T.tensor(datapoint["foot_kpts"]).reshape(-1, 3)
+        ]).to(dtype=T.float32)
         
-        body_kpts_validity = body_keypoints[:, 2] == 1
-        face_kpts_validity = face_kpts[:, 2] == 1
-        lefthand_kpts_validity = lefthand_kpts[:, 2] == 1
-        righthand_kpts_validity = righthand_kpts[:, 2] == 1
-        foot_kpts_validity = foot_kpts[:, 2] == 1
+        kpts_visibility = kpts[:, 2] == 2
+        kpts_validity = kpts[:, 2] > 0
+        kpts = kpts[:, :2]
         
-        body_kpts = body_keypoints[:, :2]
-        face_kpts = face_kpts[:, :2]
-        lefthand_kpts = lefthand_kpts[:, :2]
-        righthand_kpts = righthand_kpts[:, :2]
-        foot_kpts = foot_kpts[:, :2]
-        
-        
-        # gather all keypoints
-        all_keypoints, all_visibilities, all_validities = self.concat_keypoints(
-            body_keypoints=body_kpts, face_keypoints=face_kpts, left_hand_keypoints=lefthand_kpts, right_hand_keypoints=righthand_kpts, foot_keypoints=foot_kpts,
-            body_visibility=body_kpts_visibility, face_visibility=face_kpts_visibility, left_hand_visibility=lefthand_kpts_visibility, right_hand_visibility=righthand_kpts_visibility, foot_visibility=foot_kpts_visibility,
-            body_validity=body_kpts_validity, face_validity=face_kpts_validity, left_hand_validity=lefthand_kpts_validity, right_hand_validity=righthand_kpts_validity, foot_validity=foot_kpts_validity
-        )
-        
-        return {
-            "imagePath": self.image_id_path_map[datapoint["image_id"]],
-            "personBbox": person_bbox,
-            "faceBbox": face_bbox,
-            "leftHandBbox": left_hand_bbox,
-            "rightHandBbox": right_hand_bbox,
-            "allKeypoints": all_keypoints,
-            "allKeypointsVisibility": all_visibilities,
-            "allKeypointsValidity": all_validities,
-        }
+        return kpts, kpts_validity, kpts_visibility
     
     def __len__(self):
         return len(self.all_datapoints)
     
     def __getitem__(self, idx):
         
-        datapoint = self.all_datapoints[idx]
+        datapoint = self.all_datapoints.iloc[idx]
         
         # load image
-        image = read_image(datapoint["imagePath"], mode=ImageReadMode.RGB).to(dtype=T.float32)
-        person_bbox = datapoint["personBbox"]
-        face_bbox = datapoint["faceBbox"]
-        left_hand_bbox = datapoint["leftHandBbox"]
-        right_hand_bbox = datapoint["rightHandBbox"]
-        all_keypoints = datapoint["allKeypoints"]
-        all_visibilities = datapoint["allKeypointsVisibility"]
-        all_validities = datapoint["allKeypointsValidity"]
+        image = read_image(datapoint["image_path"], mode=ImageReadMode.RGB).to(dtype=T.float32)
+        person_bbox = T.tensor(datapoint["bbox"], dtype=T.int16).reshape(2, 2)
+        face_bbox = T.tensor(datapoint["face_box"], dtype=T.int16).reshape(2, 2)
+        lefthand_bbox =T.tensor(datapoint["lefthand_box"], dtype=T.int16).reshape(2, 2)
+        righthand_bbox = T.tensor(datapoint["righthand_box"], dtype=T.int16).reshape(2, 2)
+        all_keypoints, kpt_val, kpt_vis = self.format_keypoints(datapoint)
         
         # add padding to bounding boxes
         person_bbox[0] -= self.padding
@@ -1215,25 +1157,31 @@ class COCO2017PersonWholeBodyDataset(data.Dataset):
         person_crop = crop(image, person_bbox[0][1], person_bbox[0][0], person_bbox[1][1], person_bbox[1][0])
         person_crop = resize(person_crop, self.image_shape[::-1]) / 255
         
-        # scale keypoints and bounding boxes
+        # scale keypoints
         all_keypoints = scale_points(all_keypoints - person_bbox[0], person_bbox[1], [1, 1])
         
         # scale bounding boxes
         face_bbox = scale_points(face_bbox.to(dtype=T.float32) - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], [1, 1])
-        left_hand_bbox = scale_points(left_hand_bbox.to(dtype=T.float32) - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], [1, 1])
-        right_hand_bbox = scale_points(right_hand_bbox.to(dtype=T.float32) - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], [1, 1])
+        lefthand_bbox = scale_points(lefthand_bbox.to(dtype=T.float32) - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], [1, 1])
+        righthand_bbox = scale_points(righthand_bbox.to(dtype=T.float32) - T.stack([person_bbox[0], T.zeros(2)]), person_bbox[1], [1, 1])
         
-        face_bbox[1] = face_bbox[0] + face_bbox[1]
-        left_hand_bbox[1] = left_hand_bbox[0] + left_hand_bbox[1]
-        right_hand_bbox[1] = right_hand_bbox[0] + right_hand_bbox[1]
+        # format bounding boxes
+        person_bbox[1] += person_bbox[0]
+        face_bbox[1] += face_bbox[0]
+        lefthand_bbox[1] += lefthand_bbox[0]
+        righthand_bbox[1] += righthand_bbox[0]
+        
+        # onehot encode keypoints
+        kpt_val = one_hot(kpt_val.to(dtype=T.int64), 2)
+        kpt_vis = one_hot(kpt_vis.to(dtype=T.int64), 2)
         
         return person_crop, {
-            "faceBbox": face_bbox.flatten(),
-            "leftHandBbox": left_hand_bbox.flatten(),
-            "rightHandBbox": right_hand_bbox.flatten(),
             "keypoints": all_keypoints,
-            "keypointsVisibility": all_visibilities,
-            "keyponitsValidity": all_validities,
+            "keypointsValidity": kpt_val,
+            "keypointsVisibility": kpt_vis,
+            "faceBbox": face_bbox.flatten(),
+            "lefthandBbox": lefthand_bbox.flatten(),
+            "righthandBbox": righthand_bbox.flatten(),
         }
     
     # TODO: create a function to formal keypoints back to readable
@@ -1247,6 +1195,7 @@ class COCO2017PersonWholeBodyDataset(data.Dataset):
             T.cat([body_visibility, face_visibility, left_hand_visibility, right_hand_visibility, foot_visibility]),
             T.cat([body_validity, face_validity, left_hand_validity, right_hand_validity, foot_validity])
         )
+
 
 class HAKELarge(data.Dataset):
     def __init__(self, annotation_path, image_path, image_shape_WH, max_num_bboxes=10):

@@ -32,6 +32,44 @@ class VQVAEHead(nn.Module):
         out = self.decoder(z)
         return out
 
+
+class MLPHead(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super(type(self), self).__init__()
+        
+        input_dim = kwargs["input_dim"]
+        depth = kwargs["depth"]
+        output_dim = kwargs["output_dim"]
+        input_sequence_length = kwargs["input_sequence_length"]
+        output_sequence_length = kwargs["output_sequence_length"]
+        
+        self.continuous_output = kwargs["continuous_output"]
+        
+        assert depth >= 1, "depth must be at least 1"
+        
+        feature_shape_progression = [int(input_dim + (output_dim - input_dim) * (i / depth))  for i in range(depth + 1)]
+        sequence_shape_progression = [int(input_sequence_length + (output_sequence_length - input_sequence_length) * (i / depth))  for i in range(depth + 1)]
+        
+        self.feature_encoder = nn.Sequential(*[
+            nn.Sequential(nn.Linear(d1, d2), nn.LayerNorm(d2), nn.SiLU()) 
+            for (d1, d2) in zip(feature_shape_progression[:-1], feature_shape_progression[1:])]
+        )
+        self.sequence_encoder = nn.Sequential(*[
+            nn.Sequential(nn.Linear(d1, d2), nn.LayerNorm(d2), nn.SiLU()) 
+            for (d1, d2) in zip(sequence_shape_progression[:-1], sequence_shape_progression[1:])]
+        )
+        
+    def forward(self, x: list):
+        x = x[-1].flatten(2)
+        x = self.sequence_encoder(x)
+        x = self.feature_encoder(x.permute(0, 2, 1))
+        return x
+    
+    def compute_loss(self, y_pred, y):
+        loss_fn = T.nn.functional.smooth_l1_loss if self.continuous_output else T.nn.functional.cross_entropy
+        return loss_fn(y_pred, y)
+
+
 class UpsampleCrossAttentionrHead(nn.Module):
     def __init__(self, *args, **kwargs):
         super(type(self), self).__init__()

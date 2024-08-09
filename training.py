@@ -12,36 +12,10 @@ from omegaconf import DictConfig, OmegaConf
 
 # ---------------------------------------------------------------------------------------------------------------
 
-def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.ckpt"):
-    from glob import glob
-    import re
-    
-    files = glob(os.path.join(checkpoint_dir, pattern))
-    
-    if len(files) == 0:
-        return None
-    
-    all_models = []
-    for file in files:
-        ckpt = T.load(file, map_location=T.device("cpu"))
-        for key, val in ckpt.get("callbacks", {}).items():
-            if key.startswith("ModelCheckpoint"):
-                all_models.append({
-                    "model_path": val["best_model_path"],
-                    "model_score": val["best_model_score"]
-                })
-    if min_loss:
-        best_model = min(all_models, key=lambda x: x["model_score"])
-    else:
-        best_model = max(all_models, key=lambda x: x["model_score"])
-    
-    print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
-    return best_model["model_path"]
-
-# ---------------------------------------------------------------------------------------------------------------
-
 @hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
 def run(conf: DictConfig):
+    conf = OmegaConf.to_container(conf, resolve=True)
+    conf = OmegaConf.create(conf)
     
     assert conf.experiment.experimentName and conf.experiment.runName, "please select experiment and run name in the experiment config !"
     
@@ -66,6 +40,7 @@ def run(conf: DictConfig):
     print("initialize dataset ...")
     
     from motion_capture.data.datamodules import DataModule
+    from motion_capture.data.datasets import WIDERFace
     from motion_capture.data.datasets import COCO2017GlobalPersonInstanceSegmentation
     
     ## -------------- FACE BOUNDING BOX ----------------
@@ -78,8 +53,8 @@ def run(conf: DictConfig):
     # )
     # wider_face_dataset = WIDERFace(
     #     path="//192.168.2.206/data/datasets/WIDER-Face",
-    #     image_shape_WH=image_shape,
-    #     max_number_of_faces=10
+    #     image_shape_WH=(224, 224),
+    #     max_number_of_faces=conf.model.head.output_sequence_length
     # )
     # wflw_dataset = WFLW(
     #     image_shape_WH=image_shape, 
@@ -90,37 +65,32 @@ def run(conf: DictConfig):
     ## -------------- PERSON BOUNDING BOX ----------------
     ## -------------- PERSON SEGMENTATION ----------------
     
-    # person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
-    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-    #     image_shape_WH=image_shape,
-    #     max_num_persons=10,
-    #     max_segmentation_points=100
-    # )
-    
-    ## -------------- CROP PERSON KEYPOINTS ----------------
-    
-    # coco_wholebody_dataset = COCO2017PersonWholeBodyDataset(
-    #     annotations_folder_path="//192.168.2.206/data/datasets/COCO2017/annotations",
-    #     image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
-    #     image_shape_WH=image_shape
-    # )
-    
-    
-    
-    
-    DataModule(
-        dataset = 
-        **conf.training.data_module
+    person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
+        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
+        annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
+        image_shape_WH=(224, 224),
+        max_num_persons=1,
+        max_segmentation_points=200
     )
     
+    ## -------------- CROP PERSON FACE & HANDS ----------------
     
+    # coco_wholebody_dataset = COCO2017PersonWholeBody(
+    #     annotations_folder_path="//192.168.2.206/data/datasets/COCO2017/annotations",
+    #     image_folder_path="//192.168.2.206/data/datasets/COCO2017/images",
+    #     image_shape_WH=image_shape,
+    #     min_person_bbox_size=100
+    # )
     
+    dataloader = DataModule(
+        dataset=person_instance_dataset,
+        y_key="bboxes",
+        **conf.training.datamodule
+    )
     
+    print(f"train on {len(person_instance_dataset)} samples")
     
-    # print(f"dataset size: {len(dataloader)}")
-    # trainer.fit(model, dataloader)
-    
+    trainer.fit(model, dataloader)
 
 if __name__ == "__main__":
     

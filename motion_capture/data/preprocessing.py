@@ -2,6 +2,7 @@ from torchvision.transforms import v2
 
 # also look at albumenations https://github.com/albumentations-team/albumentations
 
+
 ImageAugmentations = {
     "INPLACE": v2.RandomChoice([
         v2.ColorJitter(
@@ -11,15 +12,12 @@ ImageAugmentations = {
             hue = 0.2
         ),
         v2.GaussianBlur(
-            kernel_size=11,
+            kernel_size=3,
             sigma = (0.1, 5.0)
         ),
         v2.ElasticTransform(
-            alpha = 250,
+            alpha = 50,
             sigma = 5
-        ),
-        v2.RandomInvert(
-            p = 1
         ),
         v2.RandomPosterize(
             bits = 2,
@@ -32,9 +30,10 @@ ImageAugmentations = {
         v2.RandomAutocontrast(
             p = 1
         ),
-        v2.JPEG(
-            quality = (5, 50)
-        )
+        v2.Identity(),
+        v2.Identity(),
+        v2.Identity(),
+        v2.Identity(),
     ])
 }
 

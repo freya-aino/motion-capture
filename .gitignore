@@ -9,3 +9,4 @@ checkpoints/
 outputs/
 dataset_embeddings/
 timm_models/
+mlruns/

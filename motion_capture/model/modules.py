@@ -4,7 +4,35 @@ import pytorch_lightning as pl
 import timm
 import os
 
-from .heads import UpsampleCrossAttentionrHead
+from .heads import MLPHead
+from .SAM.sam import SAM
+
+
+def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.ckpt"):
+    from glob import glob
+    import re
+    
+    files = glob(os.path.join(checkpoint_dir, pattern))
+    
+    if len(files) == 0:
+        return None
+    
+    all_models = []
+    for file in files:
+        ckpt = T.load(file, map_location=T.device("cpu"))
+        for key, val in ckpt.get("callbacks", {}).items():
+            if key.startswith("ModelCheckpoint"):
+                all_models.append({
+                    "model_path": val["best_model_path"],
+                    "model_score": val["best_model_score"]
+                })
+    if min_loss:
+        best_model = min(all_models, key=lambda x: x["model_score"])
+    else:
+        best_model = max(all_models, key=lambda x: x["model_score"])
+    
+    print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
+    return best_model["model_path"]
 
 
 def load_timm_model(model_name: str, pretrained = True, features_only = True):
@@ -17,57 +45,74 @@ def load_timm_model(model_name: str, pretrained = True, features_only = True):
 
 class VisionModule(pl.LightningModule):
     
-    def __init__(
-        self,
-        
-        backbone: str,
-        heads: dict,
-        
-        # - training parameters
-        optimizer_kwargs: dict = None,
-        lr_scheduler_warmup_epochs: int = None,
-        lr_scheduler: T.optim.lr_scheduler = None,
-        lr_scheduler_kwargs: dict = None
-        ):
-        
+    def __init__(self, backbone: str, head: dict):
         super().__init__()
+        self.automatic_optimization = False
         self.save_hyperparameters()
         
-        self.backbone = load_timm_model(backbone)
-        self.heads = nn.ModuleDict({k: UpsampleCrossAttentionrHead(**v) for k, v in heads.items()})
+        self.backbone = load_timm_model(backbone).eval()
+        self.head = MLPHead(**head)
         
     def forward(self, x):
         backbone_out = self.backbone(x)[-3:]
-        heads_out = {}
-        for k in self.heads:
-            heads_out[k] = self.heads[k](backbone_out)
+        heads_out = self.head(backbone_out)
         return heads_out
         
     def training_step(self, batch, batch_idx):
+        self.backbone = self.backbone.eval()
+        opt = self.optimizers()
+        x, y = batch
+        
+        # first pass
+        y_ = self(x)
+        loss = self.head.compute_loss(y_, y)
+        loss.backward()
+        # opt.first_step(zero_grad=True)
+        opt.step()
+        opt.zero_grad()
+        
+        # # second pass
+        # y_ = self(x)
+        # loss = self.head.compute_loss(y_, y)
+        # loss.backward()
+        # opt.second_step(zero_grad=True)
+        
+        self.log("train_loss", loss)
+        return loss
+    
+    def on_train_epoch_end(self):
+        lr_scheduler = self.lr_schedulers()
+        lr_scheduler.step()
+        self.log("learning_rate", lr_scheduler.get_last_lr()[0])
+    
+    def validation_step(self, batch, batch_idx):
         x, y = batch
         y_ = self(x)
-        total_loss = 0
-        for k in self.heads:
-            loss = self.heads[k].compute_loss(y_[k], y)
-            self.log(f"train/{k}_loss", loss)
-            total_loss += loss
-        self.log("train/total_loss", total_loss)
-        return total_loss
+        loss = self.head.compute_loss(y_, y)
+        self.log("val_loss", loss)
+        return loss
         
     def configure_optimizers(self):
+        # optim = SAM(
+        #     self.head.parameters(), 
+        #     adaptive=True, rho=0.4, base_optimizer=T.optim.SGD, 
+        #     lr=0.1, momentum=0.9, weight_decay=0.0005)
+        optim = T.optim.AdamW(self.head.parameters(), lr=0.004)
         
-        assert self.hparams.optimizer, "optimizer not set for training"
-        
-        opt = T.optim.AdamW(self.parameters(), **self.hparams.optimizer_kwargs)
-        
-        warmup_scheduler = T.optim.lr_scheduler.LinearLR(opt, start_factor=0.1, total_iters=self.hparams.lr_scheduler_warmup_epochs)
-        scheduler = self.hparams.lr_scheduler(opt, **self.hparams.lr_scheduler_kwargs)
-        lr_scheduler = T.optim.lr_scheduler.SequentialLR(opt, schedulers=[
-            warmup_scheduler, 
-            scheduler
-        ], milestones=[self.hparams.lr_scheduler_warmup_epochs])
+        lr_scheduler = T.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=100, eta_min=0.001)
         
         return {
-            "optimizer": opt,
-            "lr_scheduler": lr_scheduler
+            "optimizer": optim,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": "step",
+                "frequency": 1
+            }
         }
+        
+        # warmup_scheduler = T.optim.lr_scheduler.LinearLR(opt, start_factor=0.1, total_iters=self.hparams.lr_scheduler_warmup_epochs)
+        # scheduler = T.optim.lr_scheduler.(opt, **self.hparams.lr_scheduler_kwargs)
+        # lr_scheduler = T.optim.lr_scheduler.SequentialLR(opt, schedulers=[
+        #     warmup_scheduler, 
+        #     scheduler
+        # ], milestones=[self.hparams.lr_scheduler_warmup_epochs])
