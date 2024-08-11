@@ -1,3 +1,6 @@
 [submodule "motion_capture/model/SAM"]
 	path = motion_capture/model/SAM
 	url = https://github.com/davda54/sam
+[submodule "motion_capture/model/wiou"]
+	path = motion_capture/model/wiou
+	url = https://github.com/Instinct323/wiou

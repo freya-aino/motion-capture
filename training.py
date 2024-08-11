@@ -41,6 +41,7 @@ def run(conf: DictConfig):
     
     from motion_capture.data.datamodules import DataModule
     from motion_capture.data.datasets import WIDERFace
+    from motion_capture.data.datasets import WFLW
     from motion_capture.data.datasets import COCO2017GlobalPersonInstanceSegmentation
     
     ## -------------- FACE BOUNDING BOX ----------------
@@ -51,27 +52,22 @@ def run(conf: DictConfig):
     #     image_path="\\\\192.168.2.206\\data\\datasets\\CelebA\\img\\img_align_celeba\\img_celeba",
     #     image_shape_WH = image_shape
     # )
-    # wider_face_dataset = WIDERFace(
-    #     path="//192.168.2.206/data/datasets/WIDER-Face",
-    #     image_shape_WH=(224, 224),
-    #     max_number_of_faces=conf.model.head.output_sequence_length
-    # )
-    # wflw_dataset = WFLW(
-    #     image_shape_WH=image_shape, 
-    #     path="//192.168.2.206/data/datasets/WFLW",
-    #     max_number_of_faces=10
-    # )
+    wider_face_dataset = WIDERFace(
+        path="//192.168.2.206/data/datasets/WIDER-Face",
+        image_shape_WH=(224, 224),
+        max_number_of_faces=1
+    )
     
     ## -------------- PERSON BOUNDING BOX ----------------
     ## -------------- PERSON SEGMENTATION ----------------
     
-    person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
-        image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
-        annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
-        image_shape_WH=(224, 224),
-        max_num_persons=1,
-        max_segmentation_points=200
-    )
+    # person_instance_dataset = COCO2017GlobalPersonInstanceSegmentation(
+    #     image_folder_path = "//192.168.2.206/data/datasets/COCO2017/images",
+    #     annotation_folder_path = "//192.168.2.206/data/datasets/COCO2017/annotations",
+    #     image_shape_WH=(224, 224),
+    #     max_num_persons=1,
+    #     max_segmentation_points=200
+    # )
     
     ## -------------- CROP PERSON FACE & HANDS ----------------
     
@@ -83,12 +79,12 @@ def run(conf: DictConfig):
     # )
     
     dataloader = DataModule(
-        dataset=person_instance_dataset,
-        y_key="bboxes",
+        dataset=wider_face_dataset,
+        y_key="bboxes", 
         **conf.training.datamodule
     )
     
-    print(f"train on {len(person_instance_dataset)} samples")
+    print(f"train on {len(wider_face_dataset)} samples")
     
     trainer.fit(model, dataloader)
 
@@ -96,5 +92,4 @@ if __name__ == "__main__":
     
     run()
     T.cuda.empty_cache()
-    
     

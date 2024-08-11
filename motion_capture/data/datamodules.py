@@ -4,7 +4,6 @@ import pytorch_lightning as pl
 
 import torch.utils.data as Tdata
 from motion_capture.data.preprocessing import ImageAugmentations
-from motion_capture.model.models import VQVAE
 
 
 class DataModule(pl.LightningDataModule):

@@ -156,7 +156,7 @@ class WIDERFace(data.Dataset):
         annotations[val_file_mask] = val_image_path + "/" + annotations[val_file_mask]
         
         # format bbox infos
-        is_num_bboxes = annotations.map(lambda x: x.isnumeric()).to_numpy()
+        is_num_bboxes = annotations.map(lambda x: x.isnumeric())
         bbox_info_mask = (~is_num_bboxes) & (~is_file)
         format_fn = lambda x: np.array(x.split(" ")[:-1], dtype=int)
         annotations[bbox_info_mask] = annotations[bbox_info_mask].map(format_fn)
@@ -164,9 +164,9 @@ class WIDERFace(data.Dataset):
         chunk_indecies = annotations[is_file].index.to_numpy()
         chunk_sizes = annotations[chunk_indecies + 1].values.astype(int)
         chunks = (
-            annotations[chunk_i:chunk_i+chunk_size+2] 
+            annotations[chunk_i:chunk_i+chunk_size+2].to_list()
             for chunk_i, chunk_size in zip(chunk_indecies, chunk_sizes) 
-            if chunk_size > 0 and chunk_size < max_number_of_faces
+            if chunk_size > 0 and chunk_size <= max_number_of_faces
         )
         
         self.all_datapoints = list(chunks)
@@ -177,9 +177,9 @@ class WIDERFace(data.Dataset):
     def __getitem__(self, idx):
         
         datapoint = self.all_datapoints[idx]
-        image_path = datapoint.iloc[0]
-        num_faces = int(datapoint.iloc[1])
-        faces = T.tensor(np.stack(datapoint.iloc[2:]), dtype=T.long)
+        image_path = datapoint[0]
+        num_faces = int(datapoint[1])
+        faces = T.tensor(np.stack(datapoint[2:]), dtype=T.long)
         
         image = read_image(image_path, mode=ImageReadMode.RGB)
         bboxes = faces[:, 0:4].reshape(-1, 2, 2)
@@ -248,15 +248,18 @@ class WFLW(data.Dataset):
         self.all_datapoints["keypoints"] = datapoints.map(lambda x: np.array(x[:196], dtype=np.float32).reshape(-1, 2))
         self.all_datapoints["indicators"] = datapoints.map(lambda x: np.array(x[200:206], dtype=np.int16))
         
-        self.all_images = self.all_datapoints["imagePath"].unique()
+        self.all_datapoints = [
+            (image_path, {k: list(v.values()) for k, v in elements.to_dict().items()})
+            for image_path, elements in 
+            self.all_datapoints.groupby("imagePath").filter(lambda x: len(x["bbox"]) <= self.max_number_of_faces).groupby("imagePath")
+        ]
     
     def __len__(self):
-        return (len(self.all_images))
+        return (len(self.all_datapoints))
     
     def __getitem__(self, idx):
-        datapoints = self.all_datapoints[self.all_datapoints["imagePath"] == self.all_images[idx]]
-        
-        image = read_image(datapoints["imagePath"].iloc[0], mode=ImageReadMode.RGB)
+        image_path, datapoints = self.all_datapoints[idx]
+        image = read_image(image_path, mode=ImageReadMode.RGB)
         
         bboxes = np.stack(datapoints["bbox"])
         bboxes = scale_points(bboxes, image.shape[::-1][:2], [1, 1]).to(dtype=T.float32)
