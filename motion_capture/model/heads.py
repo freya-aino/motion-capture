@@ -1,184 +1,143 @@
 from importlib import import_module
 import torch as T
 import torch.nn as nn
+import torch.nn.functional as F
 
-from motion_capture.core.torchhelpers import positionalencoding1d
-from motion_capture.model.convolution import ConvBlock, C2f
+from .convolution import ConvBlock, C2f, Detection, SPPF
+from .transformer import PyramidTransformer, LL_LM_Attention
 
 
-class VQVAEHead(nn.Module):
+class YOLOv8Head(nn.Module):
+    # model head from: https://blog.roboflow.com/whats-new-in-yolov8/
     
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        input_channels: int,
+        output_channels: int,
+        output_lenght: int,
+        num_classes: int,
+        depth: int = 1,
+        ):
         super(type(self), self).__init__()
-        
-        input_dim = kwargs["input_dim"]
-        output_dim = kwargs["output_dim"]
-        output_sequence_length = kwargs["output_sequence_length"]
-        
-        self.target_sequence = nn.Parameter(T.randn(output_sequence_length, input_dim, dtype=T.float32), requires_grad=True)
-        self.tf = nn.Transformer(d_model = input_dim, **kwargs["transformer"], batch_first = True)
-        
-        self.decoder = nn.Sequential(
-            nn.Linear(input_dim, (input_dim + output_dim) // 2), 
-            nn.LayerNorm((input_dim + output_dim) // 2),
-            nn.SiLU(),
-            nn.Linear((input_dim + output_dim) // 2, output_dim),
-            nn.LayerNorm(output_dim),
-            nn.SiLU() if self.continuous_output else nn.Softmax(dim=-1)
-        )
-        
-    def forward(self, x):
-        z = self.tf(src = x, tgt = self.target_sequence.expand(x.shape[0], -1, -1))
-        out = self.decoder(z)
-        return out
-
-
-class MLPHead(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super(type(self), self).__init__()
-        
-        input_dim = kwargs["input_dim"]
-        depth = kwargs["depth"]
-        output_dim = kwargs["output_dim"]
-        input_sequence_length = kwargs["input_sequence_length"]
-        output_sequence_length = kwargs["output_sequence_length"]
-        
-        self.continuous_output = kwargs["continuous_output"]
         
         assert depth >= 1, "depth must be at least 1"
         
-        feature_shape_progression = [int(input_dim + (output_dim - input_dim) * (i / depth))  for i in range(depth + 1)]
-        sequence_shape_progression = [int(input_sequence_length + (output_sequence_length - input_sequence_length) * (i / depth))  for i in range(depth + 1)]
-        
-        self.feature_encoder = nn.Sequential(*[
-            nn.Sequential(nn.Linear(d1, d2), nn.LayerNorm(d2), nn.SiLU()) 
-            for (d1, d2) in zip(feature_shape_progression[:-1], feature_shape_progression[1:])]
-        )
-        self.sequence_encoder = nn.Sequential(*[
-            nn.Sequential(nn.Linear(d1, d2), nn.LayerNorm(d2), nn.SiLU()) 
-            for (d1, d2) in zip(sequence_shape_progression[:-1], sequence_shape_progression[1:])]
-        )
-        
-    def forward(self, x: list):
-        x = x[-1].flatten(2)
-        x = self.sequence_encoder(x)
-        x = self.feature_encoder(x.permute(0, 2, 1))
-        return x
-    
-    def compute_loss(self, y_pred, y):
-        loss_fn = T.nn.functional.smooth_l1_loss if self.continuous_output else T.nn.functional.cross_entropy
-        return loss_fn(y_pred, y)
-
-
-class UpsampleCrossAttentionrHead(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super(type(self), self).__init__()
-        
-        input_dim = kwargs["input_dim"]
-        depth = kwargs["depth"]
-        output_dim = kwargs["output_dim"]
-        input_sequence_length = kwargs["input_sequence_length"]
-        
-        self.output_sequence_length = kwargs["output_sequence_length"]
-        self.continuous_output = kwargs["continuous_output"]
-        
-        assert depth >= 1, "depth must be at least 1"
-        
-        l0 = input_dim
-        l1 = input_dim // 2
-        l2 = input_dim // 4
+        l0 = input_channels
+        l1 = input_channels // 2
+        l2 = input_channels // 4
         
         self.upsample_x2 = nn.UpsamplingBilinear2d(scale_factor=2)
         
-        self.reverse1 = C2f(l0 + l1, l1, kernel_size=1, n=depth, shortcut=True)
-        self.reverse2 = nn.Sequential(
-            C2f(l1 + l2, l2, kernel_size=1, n=depth, shortcut=True),
-            ConvBlock(l2, l2, kernel_size=3, stride=2, padding=1)
-        )
-        self.reverse3 = nn.Sequential(
-            C2f(l1 + l2, l0, kernel_size=1, n=depth, shortcut=True),
-            ConvBlock(l0, l0, kernel_size=3, stride=2, padding=1)
-        )
+        self.c2f_1 = C2f(l0 + l1, l1, kernel_size=1, n=depth, shortcut=False)
+        self.c2f_2 = C2f(l1 + l2, l2, kernel_size=1, n=depth, shortcut=False)
         
-        self.att = nn.MultiheadAttention(l0, 1, batch_first=True, dropout=0)
-        self.internal_state = nn.Parameter(positionalencoding1d(input_dim, self.output_sequence_length), requires_grad=False)
+        self.conv_1 = ConvBlock(l2, l2, kernel_size=3, stride=2, padding=1)
+        self.c2f_3 = C2f(l2 + l1, l1, kernel_size=1, n=depth, shortcut=False)
         
-        shape_progression = [int(l0 + (output_dim - l0) * (i / depth))  for i in range(depth + 1)]
-        self.decoder = nn.Sequential(*[
-            nn.Sequential(nn.Linear(d1, d2), nn.LayerNorm(d2), nn.SiLU()) 
-            for (d1, d2) in zip(shape_progression[:-1], shape_progression[1:])]
-        )
+        self.conv_2 = ConvBlock(l1, l1, kernel_size=3, stride=2, padding=1)
+        self.c2f_4 = C2f(l1 + l0, l1, kernel_size=1, n=depth, shortcut=False)
+        
+        self.det_1 = Detection(l2, output_lenght, num_classes)
+        self.det_2 = Detection(l1, output_lenght, num_classes)
+        self.det_3 = Detection(l1, output_lenght, num_classes)
         
     def forward(self, x: list):
-        x1, x2, x3 = x[-3:]
+        x1, x2, x3 = x
         
-        y1 = T.cat([self.upsample_x2(x3), x2], 1)
-        y1 = self.reverse1(y1)
+        z = T.cat([self.upsample_x2(x3), x2], 1)
+        z = self.c2f_1(z)
         
-        y2 = T.cat([self.upsample_x2(y1), x1], 1)
-        y2 = self.reverse2(y2)
+        y1 = T.cat([self.upsample_x2(z), x1], 1)
+        y1 = self.c2f_2(y1)
         
-        y3 = T.cat([y1, y2], 1)
-        y3 = self.reverse3(y3)
+        y2 = T.cat([self.conv_1(y1), z], 1)
+        y2 = self.c2f_3(y2)
         
-        internal_state = self.internal_state.expand(y3.shape[0], -1, -1)
+        y3 = T.cat([self.conv_2(y2), x3], 1)
+        y3 = self.c2f_4(y3)
         
-        kv = T.cat([y3.flatten(2).permute(0, 2, 1), internal_state], 1)
-        q = x3.flatten(2).permute(0, 2, 1)
+        y1 = self.det_1(y1)
+        y2 = self.det_2(y2)
+        y3 = self.det_3(y3)
         
-        out, _ = self.att(query=q, key=kv, value=kv)
-        out = self.decoder(out[:, -self.output_sequence_length:, :])
-        return out
+        return y1, y2, y3
     
     def compute_loss(self, y_pred, y):
         loss_fn = T.nn.functional.smooth_l1_loss if self.continuous_output else T.nn.functional.cross_entropy
         return loss_fn(y_pred, y)
 
-# class AttentionHead(nn.Module):
-#     def __init__(self, *args, **kwargs):
+class PyramidTransformerHead(nn.Module):
+    # based on: https://arxiv.org/pdf/2207.03917.pdf
+    def __init__(
+        self, 
+        input_dims: int,
+        input_length: int,
+        output_dims: int,
+        output_length: int,
+        num_heads: int
+        ):
+        super().__init__()
         
-#         super(type(self), self).__init__()
+        self.output_shape = (output_length, output_dims)
         
-#         if type(kwargs["loss_fn"]) == str:
-#             self.loss_fn = getattr(T.nn.functional, kwargs["loss_fn"])
-#         else:
-#             self.loss_fn = kwargs["loss_fn"]
         
-#         input_shape = kwargs["input_sequence_length"], kwargs["input_dim"]
-#         output_shape = kwargs["output_sequence_length"], kwargs["output_dim"]
-#         latent_shape = kwargs["output_sequence_length"], kwargs["latent_dim"]
+        self.upsample_2 = nn.Sequential(
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            nn.Conv2d(input_dims, input_dims // 2, 1, 1)
+        )
+        self.pyramid_transformer_2 = PyramidTransformer(input_dims // 2, input_length * 4, num_heads)
         
-#         self.input_pos_embedd = nn.Parameter(positional_embedding(*input_shape), requires_grad=False)
-#         self.output_pos_embedd = nn.Parameter(positional_embedding(*latent_shape), requires_grad=False)
-#         self.internal_state = nn.Parameter(T.randn(latent_shape, dtype=T.float32), requires_grad=True)
+        self.upsample_1 = nn.Sequential(
+            nn.UpsamplingBilinear2d(scale_factor=2),
+            nn.Conv2d(input_dims // 2, input_dims // 4, 1, 1)
+        )
+        self.pyramid_transformer_1 = PyramidTransformer(input_dims // 4, input_length * 16, num_heads)
         
-#         self.encoder = nn.Sequential(
-#             nn.TransformerEncoder(
-#                 nn.TransformerEncoderLayer(d_model=input_shape[1], batch_first=True, **kwargs["transformer_encoder"]["layer"]),
-#                 num_layers=kwargs["transformer_encoder"]["num_layers"],
-#             ),
-#             nn.Linear(input_shape[1], kwargs["latent_dim"]),
-#             nn.LayerNorm(kwargs["latent_dim"]),
-#             nn.SiLU()
-#         )
         
-#         self.decoder_1 = nn.TransformerDecoder(
-#             nn.TransformerDecoderLayer(d_model=kwargs["latent_dim"], batch_first=True, **kwargs["transformer_decoder"]["layer"]), 
-#             num_layers=kwargs["transformer_decoder"]["num_layers"]
-#         )
-#         self.decoder_2 = nn.Sequential(
-#             nn.Linear(kwargs["latent_dim"], output_shape[1]),
-#             nn.LayerNorm(output_shape[1]),
-#             nn.SiLU()
-#         )
+        self.memory_encoder_3 = nn.Sequential(C2f(input_dims, output_dims, 1, shortcut=True), nn.Flatten(2))
+        self.memory_encoder_2 = nn.Sequential(C2f(input_dims // 2, output_dims, 1, shortcut=True), nn.Flatten(2))
+        self.memory_encoder_1 = nn.Sequential(C2f(input_dims // 4, output_dims, 1, shortcut=True), nn.Flatten(2))
         
-#     def forward(self, x: T.Tensor, tgt_mask: T.Tensor = None):
+        self.ll_lm_attention_3 = LL_LM_Attention(output_dims, output_length, input_length, num_heads)
+        self.ll_lm_attention_2 = LL_LM_Attention(output_dims, output_length, input_length * 4, num_heads)
+        self.ll_lm_attention_1 = LL_LM_Attention(output_dims, output_length, input_length * 16, num_heads)
         
-#         z = x + self.input_pos_embedd
-#         z = self.encoder(z)
+        self.initial_predictor = nn.Sequential(
+            SPPF(input_dims, input_dims),
+            C2f(input_dims, input_dims, 2, shortcut=True),
+            C2f(input_dims, output_dims * output_length, 2, shortcut=False),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(1)
+        )
         
-#         i_state = (self.internal_state + self.output_pos_embedd).expand(z.shape[0], -1, -1)
-#         y = self.decoder_1(i_state, z, tgt_mask=tgt_mask)
-#         y = self.decoder_2(y)
+    def forward(self, x):
         
-#         return y
+        z_1, z_2, z_3 = x
+        
+        memory_3 = z_3
+        
+        memory_2 = self.pyramid_transformer_2(
+            feature_map = z_2, 
+            memory = self.upsample_2(memory_3)
+        )
+        
+        memory_1 = self.pyramid_transformer_1(
+            feature_map = z_1, 
+            memory = self.upsample_1(memory_2)
+        )
+        
+        enc_mem_3 = self.memory_encoder_3(memory_3).permute(0, 2, 1)
+        enc_mem_2 = self.memory_encoder_2(memory_2).permute(0, 2, 1)
+        enc_mem_1 = self.memory_encoder_1(memory_1).permute(0, 2, 1)
+        
+        
+        pred_3 = self.initial_predictor(memory_3).reshape(-1, *self.output_shape)
+        pred_2 = self.ll_lm_attention_3(pred_3, enc_mem_3) + pred_3
+        pred_1 = self.ll_lm_attention_2(pred_2, enc_mem_2) + pred_2
+        pred_0 = self.ll_lm_attention_1(pred_1, enc_mem_1) + pred_1
+        
+        return pred_3, pred_2, pred_1, pred_0
+    
+    def compute_loss(self, y_pred, y, loss_fn = F.l1_loss, **loss_fn_kwargs):
+        # compute residual loss for each of the predictions
+        return [loss_fn(y_p, y, **loss_fn_kwargs) for y_p in y_pred]

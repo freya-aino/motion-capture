@@ -15,7 +15,7 @@ class DataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.train_val_split = train_val_split
         self.num_workers = num_workers
-        self.image_augmentation = ImageAugmentations[image_augmentation]
+        self.image_augmentation = ImageAugmentations.get(image_augmentation, ImageAugmentations["NONE"])
         
     def collate_fn(self, batch):
         x = T.stack([self.image_augmentation(b[0]) for b in batch])
@@ -37,7 +37,7 @@ class DataModule(pl.LightningDataModule):
             shuffle=True,
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
-            # persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=True if self.num_workers != 1 else False,
             pin_memory=True
         )
     
@@ -47,6 +47,6 @@ class DataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
-            # persistent_workers=True if self.num_workers > 0 else False,
+            persistent_workers=True if self.num_workers != 1 else False,
             pin_memory=True
         )

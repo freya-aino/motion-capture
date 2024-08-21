@@ -1,0 +1,47 @@
+defaults:
+  - defaults
+  - _self_
+
+randomSeed: 0
+inputImageShape: [224, 224]
+maxNumberOfFaces: 5
+
+resumeTraining: false
+
+experiment:
+  experimentName: "face-recognition"
+  runName: "run-1"
+
+trainer:
+  accelerator: "cuda"
+  max_epochs: 50
+  # precision: "16-mixed"
+
+model:
+  backbone_name: "convnextv2_atto.fcmae_ft_in1k"
+  head_kwargs:
+    input_dims: 320
+    input_length: 49
+    output_dims: 4
+    output_length: 5
+    num_heads: 4
+
+training:
+  iou_loss_type: "EIoU"
+  optimizer_kwargs:
+    adaptive: true
+    rho: 0.4
+    lr: 0.1
+    momentum: 0.9
+    weight_decay: 0.0005
+  lr_scheduler_kwargs:
+    T_max: 50
+    eta_min: 1e-5
+
+datamodule:
+  image_augmentation: "INPLACE"
+  batch_size: 64
+  train_val_split: [0.8, 0.2]
+  num_workers: 2
+
+

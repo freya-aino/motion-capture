@@ -14,16 +14,52 @@ import json
 import csv
 import numpy as np
 import torch as T
+import timm
 
 from pathlib import Path
 from logging import getLogger
-from ICP import stochasticICP_search
 
 # -----------------------------------------------------------------------------------------------------------
 
 logger = getLogger(__name__)
 
 # -----------------------------------------------------------------------------------------------------------
+
+
+
+def find_best_checkpoint_path(checkpoint_dir, min_loss: bool = True, pattern="*.ckpt"):
+    from glob import glob
+    
+    files = glob(os.path.join(checkpoint_dir, pattern))
+    
+    if len(files) == 0:
+        return None
+    
+    all_models = []
+    for file in files:
+        ckpt = T.load(file, map_location=T.device("cpu"))
+        for key, val in ckpt.get("callbacks", {}).items():
+            if key.startswith("ModelCheckpoint"):
+                all_models.append({
+                    "model_path": val["best_model_path"],
+                    "model_score": val["best_model_score"]
+                })
+    if min_loss:
+        best_model = min(all_models, key=lambda x: x["model_score"])
+    else:
+        best_model = max(all_models, key=lambda x: x["model_score"])
+    
+    print(f"found best model with loss: {best_model['model_score']} from {best_model['model_path']}")
+    return best_model["model_path"]
+
+def load_timm_model(model_name: str, pretrained = True, features_only = True):
+    if f"{model_name}.pth" in os.listdir("./timm_models"):
+        model = T.load(f"./timm_models/{model_name}.pth").to(T.device("cpu"))
+    else:
+        model = timm.create_model(f"timm/{model_name}", pretrained=pretrained, features_only=features_only).to(T.device("cpu"))
+        T.save(model, f"./timm_models/{model_name}.pth")
+    return model
+
 
 # def moving_average_nan_interpolate(x, k, smooth_not_nan = True):
 

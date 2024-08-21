@@ -1,48 +1,47 @@
-import os
 import torch as T
-import torch.nn as nn
 import pytorch_lightning as pl
 import hydra
-import tqdm
-import timm
 
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import MLFlowLogger
 from omegaconf import DictConfig, OmegaConf
 
+
+from motion_capture.model.trainingmodules import BBoxTrainingModule
+from motion_capture.core.utils import find_best_checkpoint_path
+from motion_capture.data.datamodules import DataModule
+from motion_capture.data.datasets import WIDERFace
+
 # ---------------------------------------------------------------------------------------------------------------
 
-@hydra.main(config_path="configs/hydra", config_name="config", version_base=None)
+@hydra.main(config_path="configs/hydra", config_name="face-detection", version_base=None)
 def run(conf: DictConfig):
     conf = OmegaConf.to_container(conf, resolve=True)
     conf = OmegaConf.create(conf)
     
     assert conf.experiment.experimentName and conf.experiment.runName, "please select experiment and run name in the experiment config !"
     
-    # --------------- trianing setup ----------------
-    print("initialize training ...")
+    pl.seed_everything(conf.randomSeed)
     
-    pl.seed_everything(conf.experiment.randomSeed)
-    
-    logger = MLFlowLogger(**conf.training.logger)
-    checkpoint_callback = ModelCheckpoint(**conf.training.checkpoint_callback)
-    trainer = pl.Trainer(**conf.training.trainer, logger = logger, callbacks = [checkpoint_callback])
+    trainer = pl.Trainer(
+        **conf.trainer,
+        logger=MLFlowLogger(**conf.logger),
+        callbacks=ModelCheckpoint(**conf.checkpointCallback)
+    )
     
     # --------------- model setup ----------------
     print("initialize model ...")
     
-    from motion_capture.model.modules import VisionModule
-    
-    model = VisionModule(**conf.model)
-    model = model.train().to("cuda")
+    if conf.resumeTraining:
+        print("resume training ...")
+        model_path = find_best_checkpoint_path(conf.checkpoint_callback.dirpath, min_loss=True)
+        model = BBoxTrainingModule.load_from_checkpoint(model_path).to(conf.trainer.accelerator)
+    else:
+        print("start new training ...")
+        model = BBoxTrainingModule(**conf.model, **conf.training)
     
     # --------------- data setup ----------------
     print("initialize dataset ...")
-    
-    from motion_capture.data.datamodules import DataModule
-    from motion_capture.data.datasets import WIDERFace
-    from motion_capture.data.datasets import WFLW
-    from motion_capture.data.datasets import COCO2017GlobalPersonInstanceSegmentation
     
     ## -------------- FACE BOUNDING BOX ----------------
     ## -------------- FACE INDICATORS ----------------
@@ -54,8 +53,8 @@ def run(conf: DictConfig):
     # )
     wider_face_dataset = WIDERFace(
         path="//192.168.2.206/data/datasets/WIDER-Face",
-        image_shape_WH=(224, 224),
-        max_number_of_faces=1
+        image_shape_WH=conf.inputImageShape,
+        max_number_of_faces=conf.maxNumberOfFaces
     )
     
     ## -------------- PERSON BOUNDING BOX ----------------
@@ -78,15 +77,39 @@ def run(conf: DictConfig):
     #     min_person_bbox_size=100
     # )
     
-    dataloader = DataModule(
+    data_module = DataModule(
         dataset=wider_face_dataset,
         y_key="bboxes", 
-        **conf.training.datamodule
+        **conf.datamodule
     )
+    data_module.setup("fit")
     
     print(f"train on {len(wider_face_dataset)} samples")
     
-    trainer.fit(model, dataloader)
+    # --------------- training ----------------
+    
+    trainer.fit(model, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
+    
+    
+    # from ghostface 
+    # - ArcFace
+    # - SGD(0.1, 0.9) with CosineAnnealingLR(50, 1e-5)
+    # - 50 epochs
+    # - l2 regularization to the output layer
+    # - cosin distance used for verification
+    # - mixed precision training
+    
+    
+    # two step training !
+    # 1. just train the head until converged
+    # 2. finetue the entire network including the backbone
+    
+    
+    # from RePFormer
+    # - multiple predictions corresonding to using different output layers of the backbone (+ upsampled information)
+    # - using the stages of the backbone to predict reesiduals to the previous stage
+    
+    
 
 if __name__ == "__main__":
     

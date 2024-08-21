@@ -34,6 +34,7 @@ ImageAugmentations = {
         v2.Identity(),
         v2.Identity(),
         v2.Identity(),
-    ])
+    ]),
+    "NONE": v2.Identity()
 }
 

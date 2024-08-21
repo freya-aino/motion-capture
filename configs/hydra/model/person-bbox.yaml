@@ -1,9 +1,0 @@
-backbone: "convnextv2_atto.fcmae_ft_in1k"
-
-head:
-  input_dim: 320
-  input_sequence_length: 49
-  output_dim: 4
-  output_sequence_length: 1
-  depth: 1
-  continuous_output: True

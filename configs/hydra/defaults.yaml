@@ -1,4 +1,4 @@
-checkpoint_callback:
+checkpointCallback:
   dirpath: "checkpoints/${experiment.experimentName}/${experiment.runName}"
   save_top_k: 1
   every_n_epochs: 1

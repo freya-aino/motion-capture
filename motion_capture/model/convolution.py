@@ -61,7 +61,6 @@ class C2f(nn.Module):
         y.extend(module(y[-1]) for module in self.module_list)
         return self.conv2(T.cat(y, dim = 1))
 
-
 class SPPF(nn.Module):
     # Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher
     def __init__(self, in_channels: int, out_channels: int, maxpool_kernel_size=5): # equivalent to SPP(k=(5, 9, 13))
@@ -77,3 +76,27 @@ class SPPF(nn.Module):
         x2 = self.max_pool(x1)
         x3 = self.max_pool(x2)
         return self.conv2(T.cat([x, x1, x2, x3], 1))
+
+class Detection(nn.Module):
+    # based on YOLOv8 head
+    def __init__(self, in_channels: int, out_length: int, num_classes: int):
+        super(type(self), self).__init__()
+        
+        self.out_length = out_length
+        self.num_classes = num_classes
+        
+        self.bbox = nn.Sequential(
+            ConvBlock(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
+            ConvBlock(in_channels, in_channels, kernel_size=1, stride=1, padding=1),
+            nn.Conv2d(in_channels, 4 * out_length, kernel_size=1, stride=1, padding=0)
+        )
+        self.class_ = nn.Sequential(
+            ConvBlock(in_channels, in_channels, kernel_size=3, stride=1, padding=1),
+            ConvBlock(in_channels, in_channels, kernel_size=1, stride=1, padding=1),
+            nn.Conv2d(in_channels, num_classes * out_length, kernel_size=1, stride=1, padding=0)
+        )
+        
+    def forward(self, x):
+        bbox = self.bbox(x).permute(0, 2, 3, 1)
+        class_ = self.class_(x).permute(0, 2, 3, 1)
+        return bbox, class_

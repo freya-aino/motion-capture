@@ -1,6 +1,0 @@
-defaults:
-  - defaults
-
-# overrides
-experimentName: "full-image-experiment"
-runName: "test-run"
