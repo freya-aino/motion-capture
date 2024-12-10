@@ -2,15 +2,15 @@
 name = "motion-capture"
 version = "0.1.0"
 description = "motion capture suite"
-authors = ["kristina-aino <kristina.ai@proton.me>"]
+authors = ["freya-aino <freya.ai@pm.me>"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "motion_capture"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-device-capture-system = {path = "../device-capture-system/dist/device_capture_system-1.1.0.tar.gz"}
-calibrate-camera-system = {path = "../calibrate-camera-system/dist/calibrate_camera_system-1.0.0.tar.gz"}
+device-capture-system = {path = "./device-capture-system/dist/device_capture_system-1.1.0.tar.gz"}
+calibrate-camera-system = {path = "./calibrate-camera-system/dist/calibrate_camera_system-1.0.0.tar.gz"}
 torch = "2.3.1+cu121"
 torchvision = "0.18.1+cu121"
 torchaudio = "2.3.1+cu121"
