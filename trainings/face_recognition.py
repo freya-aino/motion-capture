@@ -260,10 +260,10 @@ if __name__ == "__main__":
     LR_SCHEDULER_ETA_MIN = 1e-5
 
     # -- datamodule
-    image_augmentation: "INPLACE"
-    batch_size: 64
-    train_val_split: [0.8, 0.2]
-    num_workers: 2
+    IMAGE_AUGMENTATION = "INPLACE"
+    BATCH_SIZE = 64
+    TRAIN_VAL_SPLIT = [0.8, 0.2]
+    NUM_WORKERS = 2
 
     pl.seed_everything(RANDOM_SEED)
 

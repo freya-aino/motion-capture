@@ -1,9 +1,0 @@
-defaults:
-  - default-bbox
-
-dataset_class: "COCOPanopticsObjectDetection"
-dataset_kwargs:
-  image_folder_path: "//192.168.2.206/data/datasets/COCO2017/images"
-  panoptics_path: "//192.168.2.206/data/datasets/COCO2017/panoptic_annotations_trainval2017/annotations"
-  image_shape_WH: ${experiment.imageShapeWH}
-  max_number_of_instances: ${experiment.outputLength}
