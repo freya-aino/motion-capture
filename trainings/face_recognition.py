@@ -1,15 +1,14 @@
-from tkinter import CHECKBUTTON
+from typing import Dict
+import typing
 import torch as T
-import torch.nn as nn
 import pytorch_lightning as pl
 import torch.utils.data as Tdata
 
-from motion_capture.utils.utils import load_timm_model
+from motion_capture.utils.utils import find_best_checkpoint_path, load_timm_model
 from motion_capture.data.preprocessing import ImageAugmentations
 from motion_capture.utils.WiseIoU import IouLoss
 from motion_capture.utils.sam import SAM
 from motion_capture.model import PyramidTransformerHead
-from motion_capture.utils.utils import find_best_checkpoint_path
 from motion_capture.data.datasets import WIDERFace
 
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -77,11 +76,11 @@ class BBoxTrainingModule(pl.LightningModule):
     def __init__(
         self,
         backbone_name: str,
-        head_kwargs: dict,
-        iou_loss_type="IoU",
-        finetune=False,
-        optimizer_kwargs: dict = {},
-        lr_scheduler_kwargs: dict = {},
+        head_kwargs: typing.Dict[str, typing.Any],
+        iou_loss_type: str,
+        finetune: bool,
+        optimizer_kwargs: Dict[str, typing.Any],
+        lr_scheduler_kwargs: Dict[str, typing.Any],
     ):
         super().__init__()
 
@@ -229,7 +228,7 @@ if __name__ == "__main__":
     RANDOM_SEED = 0
 
     # -- general
-    INPUT_IMAGE_SHAPE = [224, 224]
+    INPUT_IMAGE_SHAPE: tuple[int, int] = (224, 224)
     MAX_NUMBER_OF_FACES = 5
     # resumeTraining: false
 
@@ -243,6 +242,9 @@ if __name__ == "__main__":
 
     # -- model
     BACKBONE_NAME = "convnextv2_atto.fcmae_ft_in1k"
+    FINETUNE = False  # weather or not to train the backbone
+
+    # -- head
     HEAD_INPUT_DIMS = 320
     HEAD_INPUT_LENGTH = 49
     HEAD_OUTPUT_DIMS = 4
@@ -293,17 +295,39 @@ if __name__ == "__main__":
     # --------------- model setup ----------------
     print("initialize model ...")
 
-    if conf.resumeTraining:
-        print("resume training ...")
-        model_path = find_best_checkpoint_path(
-            conf.checkpoint_callback.dirpath, min_loss=True
-        )
-        model = BBoxTrainingModule.load_from_checkpoint(model_path).to(
-            conf.trainer.accelerator
-        )
-    else:
-        print("start new training ...")
-        model = BBoxTrainingModule(**conf.model, **conf.training)
+    # if conf.resumeTraining:
+    #     print("resume training ...")
+    #     model_path = find_best_checkpoint_path(
+    #         conf.checkpoint_callback.dirpath, min_loss=True
+    #     )
+    #     model = BBoxTrainingModule.load_from_checkpoint(model_path).to(
+    #         conf.trainer.accelerator
+    #     )
+    # else:
+    # print("start new training ...")
+    model = BBoxTrainingModule(
+        backbone_name=BACKBONE_NAME,
+        head_kwargs={
+            "input_dims": HEAD_INPUT_DIMS,
+            "input_length": HEAD_INPUT_LENGTH,
+            "output_dims": HEAD_OUTPUT_DIMS,
+            "output_length": HEAD_OUTPUT_LENGTH,
+            "num_heads": HEAD_NUM_HEADS,
+        },
+        iou_loss_type=IOU_LOSS_TYPE,
+        finetune=FINETUNE,
+        optimizer_kwargs={
+            "adaptive": OPTIMIZER_ADAPTIVE,
+            "rho": OPTIMIZER_RHO,
+            "lr": OPTIMIZER_LR,
+            "momentum": OPTIMIZER_MOMENTUM,
+            "decay": OPTIMIZER_WEIGHT_DECAY,
+        },
+        lr_scheduler_kwargs={
+            "Tmax": LR_SCHEDULER_T_MAX,
+            "eta_min": LR_SCHEDULER_ETA_MIN,
+        },
+    )
 
     # --------------- data setup ----------------
     print("initialize dataset ...")
@@ -318,8 +342,8 @@ if __name__ == "__main__":
     # )
     wider_face_dataset = WIDERFace(
         path="//192.168.2.206/data/datasets/WIDER-Face",
-        image_shape_WH=conf.inputImageShape,
-        max_number_of_faces=conf.maxNumberOfFaces,
+        image_shape_WH=INPUT_IMAGE_SHAPE,
+        max_number_of_faces=MAX_NUMBER_OF_FACES,
     )
 
     ## -------------- PERSON BOUNDING BOX ----------------
@@ -343,7 +367,12 @@ if __name__ == "__main__":
     # )
 
     data_module = DataModule(
-        dataset=wider_face_dataset, y_key="bboxes", **conf.datamodule
+        dataset=wider_face_dataset,
+        y_key="bboxes",
+        image_augmentation=IMAGE_AUGMENTATION,
+        batch_size=64,
+        train_val_split=[0.8, 0.2],
+        num_workers=2,
     )
     data_module.setup("fit")
 

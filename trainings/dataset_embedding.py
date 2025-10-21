@@ -1,8 +1,5 @@
 import torch as T
-from omegaconf import DictConfig
-import hydra
 import os
-
 import tqdm
 import timm
 
@@ -13,24 +10,21 @@ def collate_fn(batch):
     return T.stack([b[0] for b in batch])
 
 
-@hydra.main(
-    config_path="configs/hydra", config_name="embedding-config", version_base=None
-)
-def run(conf: DictConfig):
-    model_name = conf.encoder
+def run():
+    MODEL_NAME = conf.encoder
 
-    if not os.path.exists(f"./dataset_embeddings/{model_name}"):
-        print(f"create directory: ./dataset_embeddings/{model_name}")
-        os.makedirs(f"./dataset_embeddings/{model_name}")
+    if not os.path.exists(f"./dataset_embeddings/{MODEL_NAME}"):
+        print(f"create directory: ./dataset_embeddings/{MODEL_NAME}")
+        os.makedirs(f"./dataset_embeddings/{MODEL_NAME}")
 
     # --------------- model setup ----------------
     print("initialize model ...")
 
-    if f"{model_name}.pth" in os.listdir("./timm_models"):
-        encoder = T.load(f"./timm_models/{model_name}.pth")
+    if f"{MODEL_NAME}.pth" in os.listdir("./timm_models"):
+        encoder = T.load(f"./timm_models/{MODEL_NAME}.pth")
     else:
-        encoder = timm.create_model(model_name, pretrained=True, features_only=True)
-        T.save(encoder, f"./timm_models/{model_name}.pth")
+        encoder = timm.create_model(MODEL_NAME, pretrained=True, features_only=True)
+        T.save(encoder, f"./timm_models/{MODEL_NAME}.pth")
 
     encoder = encoder.eval().to("cuda")
 

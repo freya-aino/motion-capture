@@ -5,6 +5,7 @@ import re
 import os
 import csv
 import json
+from typing import Tuple
 import cv2
 import logging
 import h5py
@@ -29,7 +30,9 @@ from torch.nn.functional import one_hot, pad
 # ------------------------------------------------------------------------
 
 
-def scale_points(points: T.Tensor, input_shape: tuple, output_shape: tuple) -> T.Tensor:
+def scale_points(
+    points: T.Tensor, input_shape: tuple[int], output_shape: tuple[int]
+) -> T.Tensor:
     """
     points in format [N, (W, H)] or [N, (W, H, D)] (only W and H are relevant)
     input_shape and output_shape in format [W, H]
@@ -97,7 +100,12 @@ class CombinedDataset(data.Dataset):
 
 
 class CelebA(data.Dataset):
-    def __init__(self, annotatin_path, image_path, image_shape_WH):
+    def __init__(
+        self,
+        annotatin_path: str,
+        image_path: str,
+        image_shape_WH: T.TupleType,
+    ):
         super().__init__()
         self.keypoint_indecies = [
             "lefteye_x",
@@ -171,7 +179,9 @@ class CelebA(data.Dataset):
 
 
 class WIDERFace(data.Dataset):
-    def __init__(self, path: str, image_shape_WH: tuple, max_number_of_faces: int):
+    def __init__(
+        self, path: str, image_shape_WH: tuple[int, int], max_number_of_faces: int
+    ):
         super(type(self), self).__init__()
 
         self.image_shape = image_shape_WH
