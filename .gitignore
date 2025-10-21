@@ -1,3 +1,7 @@
+checkpoints/*
+mlflow_runs/*
+timm_models/*
+
 __pycache__
 .venv/
 .vscode/
@@ -5,8 +9,5 @@ __pycache__
 dist/
 lightning_logs/
 logs/
-checkpoints/
 outputs/
 dataset_embeddings/
-timm_models/
-mlruns/
