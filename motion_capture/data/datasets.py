@@ -1,3 +1,4 @@
+from pathlib import Path
 import random
 import time
 import math
@@ -5,14 +6,11 @@ import re
 import os
 import csv
 import json
-from typing import Tuple
-import cv2
+from typing import Sequence, Tuple, TypeVarTuple
 import logging
-import h5py
 
 import numpy as np
 import torch as T
-import pandas as pd
 
 from copy import deepcopy
 from torch.utils import data
@@ -22,63 +20,44 @@ from torch.nn.functional import one_hot, pad
 
 # ------------------------------------------------------------------------
 
-# Segmentation for classification:
-# - https://github.com/qubvel/segmentation_models.pytorch
-
-# ------------------------------------------------------------------------
-
-# ------------------------------------------------------------------------
-
 
 def scale_points(
-    points: T.Tensor, input_shape: tuple[int], output_shape: tuple[int]
+    points: T.Tensor,
+    input_shape: tuple[int, int],
+    output_shape: tuple[int, int],
 ) -> T.Tensor:
     """
-    points in format [N, (W, H)] or [N, (W, H, D)] (only W and H are relevant)
+    points in format [N, W, H, ...] (only W and H are relevant)
     input_shape and output_shape in format [W, H]
     """
     assert len(points.shape) > 1, "points must have at least 2 dimensions"
-    if type(input_shape) != T.Tensor:
-        input_shape = T.tensor(input_shape, dtype=T.float32)
-    if type(output_shape) != T.Tensor:
-        output_shape = T.tensor(output_shape, dtype=T.float32)
 
-    if points.shape[-1] == 2:
-        return (
-            points
-            / input_shape.expand(*points.shape[:-1], -1)
-            * output_shape.expand(*points.shape[:-1], -1)
-        )
-    else:
-        return T.cat(
-            [
-                points[..., :2]
-                / input_shape.expand(*points.shape[:-1], -1)
-                * output_shape.expand(*points.shape[:-1], -1),
-                points[..., 2:],
-            ],
-            dim=-1,
-        )
+    input_shape_tensor = T.tensor(input_shape, dtype=T.float32).expand(
+        *points.shape[:-1], -1
+    )
+    output_shape_tensor = T.tensor(output_shape, dtype=T.float32).expand(
+        *points.shape[:-1], -1
+    )
+
+    return T.cat(
+        [
+            points[..., :2] / input_shape_tensor * output_shape_tensor,
+            points[..., 2:],
+        ],
+        dim=-1,
+    )
 
 
 def center_bbox(bbox: T.Tensor) -> T.Tensor:
     """
-    bbox in format [x1, y1, w, h] or [[x, y], [w, h]]
+    bbox in format [x, y, w, h]
     """
-
-    # bbox is in format [x1, y1, w, h]
-    if bbox.dim() == 1:
-        return T.tensor(
-            [bbox[0] + (bbox[2] / 2), bbox[1] + (bbox[3] / 2), bbox[2] / 2, bbox[3] / 2]
-        )
-
-    # bbox is in format [[x, y], [w, h]]
     return T.tensor(
-        [
-            [bbox[0][0] + (bbox[1][0] / 2), bbox[0][1] + (bbox[1][1] / 2)],
-            [bbox[1][0] / 2, bbox[1][1] / 2],
-        ]
+        [bbox[0] + (bbox[2] / 2), bbox[1] + (bbox[3] / 2), bbox[2] / 2, bbox[3] / 2]
     )
+
+
+# ------------------------------------------------------------------------
 
 
 class CombinedDataset(data.Dataset):
@@ -94,6 +73,9 @@ class CombinedDataset(data.Dataset):
             if idx < len(dataset):
                 return dataset[idx]
             idx -= len(dataset)
+
+    def __getitems__(self, idxs):
+        return [self.__getitem__(idx) for idx in idxs]
 
 
 # ------------------------------------------------------------------------
@@ -161,19 +143,23 @@ class CelebA(data.Dataset):
         datapoint = self.all_datapoints.iloc[idx]
 
         image = read_image(datapoint["imagePath"], ImageReadMode.RGB)
+        image_shape = (image.shape[::-1][0], image.shape[::-1][1])
+
         keypoints = T.tensor(
             datapoint[self.keypoint_indecies].to_numpy().astype(np.float32)
         ).reshape(-1, 2)
-        keypoints = scale_points(keypoints, image.shape[::-1][:2], [1, 1])
+        keypoints = scale_points(
+            points=keypoints, input_shape=image_shape, output_shape=[1, 1]
+        )
 
         bbox = T.tensor(
             datapoint[self.bbox_indecies].to_numpy().astype(np.float32)
         ).reshape(2, 2)
-        bbox = scale_points(bbox, image.shape[::-1][:2], [1, 1])
+        bbox = scale_points(points=bbox, input_shape=image_shape, output_shape=[1, 1])
         bbox[1, :] += bbox[0, :]
         bbox = bbox.flatten()
 
-        image = resize(image, self.image_shape[::-1], antialias=True) / 255
+        image = resize(image, image_shape, antialias=True) / 255
 
         return image, {"keypoints": keypoints, "bbox": bbox}
 
@@ -557,8 +543,8 @@ class WFLW(data.Dataset):
 class MPIIDataset(data.Dataset):
     def __init__(
         self,
-        output_full_image_shape_WH: tuple,
-        output_person_image_shape_WH: tuple,
+        output_full_image_shape_WH: tuple[int, int],
+        output_person_image_shape_WH: tuple[int, int],
         annotation_path: str,
         image_folder_path: str,
     ):
@@ -1316,7 +1302,7 @@ class COCO2017PersonWholeBody(data.Dataset):
         self,
         annotations_folder_path: str,
         image_folder_path: str,
-        image_shape_WH: tuple,
+        image_shape_WH: tuple[int, int],
         min_person_bbox_size: int = 100,
         padding: int = 20,
     ):
@@ -1507,7 +1493,13 @@ class COCO2017PersonWholeBody(data.Dataset):
 
 
 class HAKELarge(data.Dataset):
-    def __init__(self, annotation_path, image_path, image_shape_WH, max_num_bboxes=10):
+    def __init__(
+        self,
+        annotation_path: Path,
+        image_path: Path,
+        image_shape_WH: tuple[int, int],
+        max_num_bboxes: int = 10,
+    ):
         super().__init__()
 
         self.annotation_path = annotation_path
@@ -1526,7 +1518,7 @@ class HAKELarge(data.Dataset):
             if formatted_datapoints is not None:
                 self.all_datapoints.append(formatted_datapoints)
 
-    def format_datapoint(self, k, v):
+    def format_datapoint(self, k, v) -> dict[str, T.Tensor]:
         if len(v["labels"]) == 0:
             return None
 
@@ -1556,8 +1548,11 @@ class HAKELarge(data.Dataset):
         dp = self.all_datapoints[idx]
 
         image = read_image(dp["imagePath"], ImageReadMode.RGB) / 255
+        image_shape = (image.shape[2], image.shape[1])
 
-        human_bboxes = scale_points(dp["humanBboxes"], image.shape[1:][::-1], [1, 1])
+        human_bboxes = scale_points(
+            points=dp["humanBboxes"], input_shape=image_shape, output_shape=[1, 1]
+        )
         human_bboxes = human_bboxes.reshape(-1, 4)
         human_bboxes = pad(
             human_bboxes,
@@ -1565,7 +1560,9 @@ class HAKELarge(data.Dataset):
             value=0,
         )
 
-        object_bboxes = scale_points(dp["objectBboxes"], image.shape[1:][::-1], [1, 1])
+        object_bboxes = scale_points(
+            points=dp["objectBboxes"], input_shape=image_shape, output_shape=[1, 1]
+        )
         object_bboxes = object_bboxes.reshape(-1, 4)
         object_bboxes = pad(
             object_bboxes,
